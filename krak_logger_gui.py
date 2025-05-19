@@ -1,4 +1,5 @@
-import nidaqmx
+import requests
+import HelpFunctions.utility as utility
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -55,6 +56,34 @@ def generate_filenames():
 def ensure_temp_dir():
     if not os.path.exists(TEMP_DIR):
         os.makedirs(TEMP_DIR)
+
+def setup_daq():
+    dotenv.load_dotenv()
+    ip = os.getenv("BKDAQ_IP")
+    if not ip:
+        messagebox.showerror("Error", "BKDAQ_IP environment variable not set.")
+        return None
+    host = "http://" + ip
+    # Open recorder application
+    response = requests.put(host + "/rest/rec/open")
+
+    # After this you can get information about the device, this is done with a GET request, the response will contain JSON that describes the module.
+
+    # Get module info, this contains information such as type, and what kinds of functions it supports
+    response = requests.get(host + "/rest/rec/module/info")
+    module_info = response.json()
+    print(module_info)
+
+    # Start TEDS detection, we then check when it is done and read it out as JSON
+
+    # Detect TEDS
+    response = requests.post(host + "/rest/rec/channels/input/all/transducers/detect")
+    while requests.get(host + "/rest/rec/onchange").json()["transducerDetectionActive"]:
+        pass
+    # Get TEDS information
+    response = requests.get(host + "/rest/rec/channels/input/all/transducers")
+    channels = response.json()
+    print(channels)
 
 
 def record_data():
@@ -276,5 +305,8 @@ fig, ax1 = plt.subplots()
 ax2 = ax1.twinx()
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+
+daqstatus = setup_daq()
+metadata_text.insert(tk.END, f"DAQ Status: {daqstatus}\n")
 
 root.mainloop()
