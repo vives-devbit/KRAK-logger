@@ -61,8 +61,7 @@ def setup_daq():
     dotenv.load_dotenv()
     ip = os.getenv("BKDAQ_IP")
     if not ip:
-        messagebox.showerror("Error", "BKDAQ_IP environment variable not set.")
-        return None
+        return "Error: BKDAQ_IP environment variable not set."
     host = "http://" + ip
     # Open recorder application
     response = requests.put(host + "/rest/rec/open")
