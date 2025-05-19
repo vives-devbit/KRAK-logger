@@ -85,6 +85,53 @@ def setup_daq():
     channels = response.json()
     print(channels)
 
+    # To start a stream we first need to set a configuration. In this example we create a configuration by requesting a default channel setup. We use a tiny utility function to update all values with a given key.
+
+    import HelpFunctions.utility as utility
+    # Create a new recording
+    response = requests.put(host + "/rest/rec/create")
+    # Get Default setup for channels
+    response = requests.get(host + "/rest/rec/channels/input/default")
+    setup = response.json()
+    # Replace stream destination from default SD card to socket
+    utility.update_value("destinations", ["socket"], setup)
+    # Set enabled to false for all channels
+    utility.update_value("enabled", False, setup)
+    # Enable channels with valid TEDS
+    for channel_nr in range(len(channels)):
+        if channels[channel_nr] != None:
+            setup["channels"][channel_nr]["transducer"] = channels[channel_nr]
+            setup["channels"][channel_nr]["enabled"] = True
+            setup["channels"][channel_nr]["ccld"] = channels[channel_nr]["requiresCcld"]
+    # Remove None channels
+    channels = list(filter(lambda x : x != None, channels))
+    print(setup)
+    if not any(channels):
+        return "No channels enabled! Did you connect a microphone?"
+    
+    # Next we setup the input channels for streaming. We use the input setup we got previously.
+
+    # Create input channels with the setup
+    response = requests.put(host + "/rest/rec/channels/input", json = setup)
+    print(response.text)
+    # Get streaming socket
+    response = requests.get(host + "/rest/rec/destination/socket")
+    inputport = response.json()["tcpPort"]
+    print(response.json())
+    response = requests.post(host + "/rest/rec/measurements")
+
+    # We need the sample rate to correctly calculate FFTs, we get that by finding the closest sample rate in module info
+
+    # Sample rate is found by doubling the channel bandwidth and finding the closest supported sample rate
+    # Channel bandwidth is found in the channel setup, it is in string format, so to get it as a number replace khz with *1000 and evaluate
+    bandwidth = setup["channels"][0]["bandwidth"]
+    bandwidth = bandwidth.replace('kHz', '*1000')
+    bandwidth = eval(bandwidth)
+    supported_sample_rates = module_info["supportedSampleRates"]
+    # Find the sample rate with the minimum difference to bandwidth * 2
+    sample_rate = min(supported_sample_rates, key = lambda x:abs(x - bandwidth * 2))
+    print(sample_rate)
+    return "DAQ setup complete. Sample rate: " + str(sample_rate) + " Hz"
 
 def record_data():
     global recording, NUM_SAMPLES, DURATION, OUTPUT_WAV_FILE, OUTPUT_PARQUET_FILE
