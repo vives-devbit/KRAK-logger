@@ -101,7 +101,7 @@ def save_to_parquet():
             "Product": product_entry.get(),
             "Measurement Parameters": measurement_entry.get(),
             "Timestamp": timestamp,
-            "Sample Rate (Hz)": SAMPLE_RATE,
+            "Sample Rate (Hz)": Lanxi.sample_rate,
         }
 
         for param, entry in parameter_entries.items():
