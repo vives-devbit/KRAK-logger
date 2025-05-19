@@ -1,5 +1,9 @@
 import requests
+from HelpFunctions.lanxi import LanXI
 import HelpFunctions.utility as utility
+from openapi.openapi_header import *
+from openapi.openapi_stream import *
+import socket
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -17,15 +21,20 @@ import io
 
 # Global variables
 recording = False
-SAMPLE_RATE = 48000  # 48 kHz per channel
 DURATION = 1  # Default duration (can be adjusted)
-NUM_SAMPLES = SAMPLE_RATE * DURATION
 OUTPUT_WAV_FILE = "recorded_audio.wav"
 OUTPUT_PARQUET_FILE = "recorded_data.parquet"
 BUCKET_NAME = "krak" # Replace with your bucket name
 parameter_entries = {}
 TEMP_DIR = "temp_files"
 
+# IP of Lan-XI
+dotenv.load_dotenv()
+ip = os.getenv("BKDAQ_IP")
+Lanxi = LanXI(ip)
+Lanxi.setup_stream()
+SAMPLE_RATE = Lanxi.sample_rate
+NUM_SAMPLES = SAMPLE_RATE * DURATION
 
 def update_parameters():
     global parameter_entries
@@ -57,86 +66,11 @@ def ensure_temp_dir():
     if not os.path.exists(TEMP_DIR):
         os.makedirs(TEMP_DIR)
 
-def setup_daq():
-    dotenv.load_dotenv()
-    ip = os.getenv("BKDAQ_IP")
-    if not ip:
-        return "Error: BKDAQ_IP environment variable not set."
-    host = "http://" + ip
-    # Open recorder application
-    response = requests.put(host + "/rest/rec/open")
-
-    # After this you can get information about the device, this is done with a GET request, the response will contain JSON that describes the module.
-
-    # Get module info, this contains information such as type, and what kinds of functions it supports
-    response = requests.get(host + "/rest/rec/module/info")
-    module_info = response.json()
-    print(module_info)
-
-    # Start TEDS detection, we then check when it is done and read it out as JSON
-
-    # Detect TEDS
-    response = requests.post(host + "/rest/rec/channels/input/all/transducers/detect")
-    while requests.get(host + "/rest/rec/onchange").json()["transducerDetectionActive"]:
-        pass
-    # Get TEDS information
-    response = requests.get(host + "/rest/rec/channels/input/all/transducers")
-    channels = response.json()
-    print(channels)
-
-    # To start a stream we first need to set a configuration. In this example we create a configuration by requesting a default channel setup. We use a tiny utility function to update all values with a given key.
-
-    import HelpFunctions.utility as utility
-    # Create a new recording
-    response = requests.put(host + "/rest/rec/create")
-    # Get Default setup for channels
-    response = requests.get(host + "/rest/rec/channels/input/default")
-    setup = response.json()
-    # Replace stream destination from default SD card to socket
-    utility.update_value("destinations", ["socket"], setup)
-    # Set enabled to false for all channels
-    utility.update_value("enabled", False, setup)
-    # Enable channels with valid TEDS
-    for channel_nr in range(len(channels)):
-        if channels[channel_nr] != None:
-            setup["channels"][channel_nr]["transducer"] = channels[channel_nr]
-            setup["channels"][channel_nr]["enabled"] = True
-            setup["channels"][channel_nr]["ccld"] = channels[channel_nr]["requiresCcld"]
-    # Remove None channels
-    channels = list(filter(lambda x : x != None, channels))
-    print(setup)
-    if not any(channels):
-        return "No channels enabled! Did you connect a microphone?"
-    
-    # Next we setup the input channels for streaming. We use the input setup we got previously.
-
-    # Create input channels with the setup
-    response = requests.put(host + "/rest/rec/channels/input", json = setup)
-    print(response.text)
-    # Get streaming socket
-    response = requests.get(host + "/rest/rec/destination/socket")
-    inputport = response.json()["tcpPort"]
-    print(response.json())
-    response = requests.post(host + "/rest/rec/measurements")
-
-    # We need the sample rate to correctly calculate FFTs, we get that by finding the closest sample rate in module info
-
-    # Sample rate is found by doubling the channel bandwidth and finding the closest supported sample rate
-    # Channel bandwidth is found in the channel setup, it is in string format, so to get it as a number replace khz with *1000 and evaluate
-    bandwidth = setup["channels"][0]["bandwidth"]
-    bandwidth = bandwidth.replace('kHz', '*1000')
-    bandwidth = eval(bandwidth)
-    supported_sample_rates = module_info["supportedSampleRates"]
-    # Find the sample rate with the minimum difference to bandwidth * 2
-    sample_rate = min(supported_sample_rates, key = lambda x:abs(x - bandwidth * 2))
-    print(sample_rate)
-    return "DAQ setup complete. Sample rate: " + str(sample_rate) + " Hz"
 
 def record_data():
     global recording, NUM_SAMPLES, DURATION, OUTPUT_WAV_FILE, OUTPUT_PARQUET_FILE
     try:
         DURATION = float(duration_entry.get())
-        NUM_SAMPLES = int(SAMPLE_RATE * DURATION)
     except ValueError:
         messagebox.showerror("Invalid Input", "Please enter a valid number for duration.")
         return
@@ -148,20 +82,7 @@ def record_data():
 
     recording = True
 
-    with nidaqmx.Task() as task:
-        task.ai_channels.add_ai_voltage_chan("Dev1/ai0", terminal_config=nidaqmx.constants.TerminalConfiguration.DIFF)
-        task.ai_channels.add_ai_voltage_chan("Dev1/ai1", terminal_config=nidaqmx.constants.TerminalConfiguration.DIFF)
-
-        task.timing.cfg_samp_clk_timing(SAMPLE_RATE,
-                                        sample_mode=nidaqmx.constants.AcquisitionType.FINITE,
-                                        samps_per_chan=int(NUM_SAMPLES))
-
-        print("Recording...")
-        data = task.read(number_of_samples_per_channel=int(NUM_SAMPLES))
-        print("Recording complete.")
-
-    data = np.array(data)
-    time_axis = np.linspace(0, DURATION, NUM_SAMPLES)
+    time_axis, data = Lanxi.SampleChannels(DURATION)
 
     update_plot(time_axis, data)
 
@@ -184,7 +105,8 @@ def save_to_parquet():
         metadata = {
             "Product": product_entry.get(),
             "Measurement Parameters": measurement_entry.get(),
-            "Timestamp": timestamp
+            "Timestamp": timestamp,
+            "Sample Rate (Hz)": SAMPLE_RATE,
         }
 
         for param, entry in parameter_entries.items():
@@ -351,8 +273,5 @@ fig, ax1 = plt.subplots()
 ax2 = ax1.twinx()
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-
-daqstatus = setup_daq()
-metadata_text.insert(tk.END, f"DAQ Status: {daqstatus}\n")
 
 root.mainloop()
