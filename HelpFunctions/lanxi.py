@@ -60,7 +60,7 @@ class LanXI:
         # Remove None channels
         # self.channels = list(filter(lambda x : x != None, self.channels))
         # remove disabled channels
-        self.channels = list(filter(lambda x : x["enabled"] == True, self.channels))
+        self.channels = list(filter(lambda x : x["enabled"] == True, self.setup["channels"]))
         print(self.setup)
         if not any(self.channels):
             print("No channels enabled! Did you connect a microphone?")
