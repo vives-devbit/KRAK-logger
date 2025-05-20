@@ -102,7 +102,7 @@ class LanXI:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((self.ip, self.inputport))
             total_samples = 0
-            while total_samples < num_samples:
+            while total_samples <= num_samples:
                 # Get header
                 data = s.recv(28)
                 wstream = OpenapiHeader.from_bytes(data)

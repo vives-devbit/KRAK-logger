@@ -14,6 +14,8 @@ import sounddevice as sd
 import os
 import io
 
+# test test 123
+
 # Global variables
 recording = False
 DURATION = 1  # Default duration (can be adjusted)
