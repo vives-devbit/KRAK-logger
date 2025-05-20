@@ -58,7 +58,10 @@ class LanXI:
             self.setup["channels"][1]["ccld"] = False
             self.setup["channels"][1]["range"] = "10 Vpeak"  # Set the correct range for force sensor
         # Remove None channels
-        self.channels = list(filter(lambda x : x != None, self.channels))
+        # self.channels = list(filter(lambda x : x != None, self.channels))
+        # remove disabled channels
+        self.channels = list(filter(lambda x : x["enabled"] == True, self.channels))
+        print(self.setup)
         if not any(self.channels):
             print("No channels enabled! Did you connect a microphone?")
             exit()
