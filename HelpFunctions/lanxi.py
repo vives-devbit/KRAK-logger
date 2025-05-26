@@ -144,11 +144,9 @@ class LanXI:
                             if signal.signal_id == 1:
                                 total_samples = len(arrays[0])
             # Stop measurement
+            import requests
             requests.put(self.host + "/rest/rec/measurements/stop")
             s.close()
-        import requests
-        requests.put(self.host + "/rest/rec/finish")
-        requests.put(self.host + "/rest/rec/close")
 
         # Truncate to the same length and to num_samples
         min_len = min(len(arrays[0]), len(arrays[1]), num_samples)
@@ -157,3 +155,11 @@ class LanXI:
         time_axis = np.linspace(0, min_len / sample_rate, min_len, endpoint=False)
         data = np.vstack([ch1, ch2])
         return time_axis, data
+    
+    def close_stream(self):
+        """
+        Properly finish and close the LAN-XI recorder application.
+        Call this when closing the program.
+        """
+        requests.put(self.host + "/rest/rec/finish")
+        requests.put(self.host + "/rest/rec/close")
