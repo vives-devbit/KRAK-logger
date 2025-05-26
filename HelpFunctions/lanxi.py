@@ -107,10 +107,18 @@ class LanXI:
                 data = s.recv(28)
                 wstream = OpenapiHeader.from_bytes(data)
                 content_length = wstream.content_length + 28
+                print(f"magic: {wstream.magic}, \
+                      header_length: {wstream.header_length}, \
+                      message_type: {wstream.message_type}, \
+                      message_ftime: {wstream.time}, \
+                      message_ftime2: {wstream.time2}, \
+                      content_length: {content_length}")
                 # Get rest of package
                 while len(data) < content_length:
                     packet = s.recv(content_length - len(data))
                     data += packet
+                print(f"Received package of length {len(data)} bytes")
+                print(f"data: ", data)
                 # Parse package
                 package = OpenapiStream.from_bytes(data)
                 if package.header.message_type == OpenapiStream.Header.EMessageType.e_interpretation:
@@ -129,7 +137,6 @@ class LanXI:
                             if signal.signal_id == 1:
                                 total_samples = len(arrays[0])
             # Stop measurement
-            import requests
             requests.put(self.host + "/rest/rec/measurements/stop")
             s.close()
         import requests
