@@ -71,7 +71,6 @@ class LanXI:
         # Get streaming socket
         self.response = requests.get(self.host + "/rest/rec/destination/socket")
         self.inputport = self.response.json()["tcpPort"]
-        self.response = requests.post(self.host + "/rest/rec/measurements")
 
 
     def GetFs(self):
@@ -98,6 +97,9 @@ class LanXI:
         arrays = [[], []]  # For channel 1 and 2
         interpretations = [{},{},{},{},{},{}]
 
+        import requests
+        self.response = requests.post(self.host + "/rest/rec/measurements")
+        
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((self.ip, self.inputport))
             total_samples = 0
