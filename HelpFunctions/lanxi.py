@@ -87,13 +87,6 @@ class LanXI:
         # Find the sample rate with the minimum difference to bandwidth * 2
         self.sample_rate = min(supported_sample_rates, key = lambda x:abs(x - bandwidth * 2))
 
-    def hexdump(self, data, width=16):
-        for i in range(0, len(data), width):
-            chunk = data[i:i+width]
-            hex_str = ' '.join(f'{b:02x}' for b in chunk)
-            ascii_str = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
-            print(f'{i:08x}  {hex_str:<{width*3}}  {ascii_str}')
-
     def SampleChannels(self, duration):
         """
         Sample both channels for the given duration (in seconds).
@@ -114,18 +107,10 @@ class LanXI:
                 data = s.recv(28)
                 wstream = OpenapiHeader.from_bytes(data)
                 content_length = wstream.content_length + 28
-                print(f"magic: {wstream.magic}, \
-                      header_length: {wstream.header_length}, \
-                      message_type: {wstream.message_type}, \
-                      message_ftime: {wstream.time}, \
-                      message_ftime2: {wstream.time2}, \
-                      content_length: {content_length}")
                 # Get rest of package
                 while len(data) < content_length:
                     packet = s.recv(content_length - len(data))
                     data += packet
-                print(f"Received package of length {len(data)} bytes")
-                self.hexdump(data)
                 # Parse package
                 package = OpenapiStream.from_bytes(data)
                 if package.header.message_type == OpenapiStream.Header.EMessageType.e_interpretation:
