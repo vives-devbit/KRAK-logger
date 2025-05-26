@@ -217,6 +217,17 @@ def on_closing():
         Lanxi.close_stream()
     except Exception as e:
         print(f"Error closing LAN-XI stream: {e}")
+    # Attempt to stop all non-main threads gracefully
+    for thread in threading.enumerate():
+        if thread is not threading.main_thread():
+            try:
+                # If your threads are daemon, they will exit with the main program.
+                # If not, you may need to implement a stop mechanism for your threads.
+                # Here, we just print their names for awareness.
+                print(f"Waiting for thread to finish: {thread.name}")
+                thread.join(timeout=1)
+            except Exception as e:
+                print(f"Error joining thread {thread.name}: {e}")
     root.destroy()
 
 # Create the GUI
