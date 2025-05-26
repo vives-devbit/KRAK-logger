@@ -53,7 +53,6 @@ class LanXI:
                 self.setup["channels"][channel_nr]["ccld"] = self.channels[channel_nr]["requiresCcld"]
         # Configure channel 2 (index 1) as analog force channel with 10 Vpeak range
         if len(self.setup["channels"]) > 1:
-            self.setup["channels"][1]["transducer"] = None
             self.setup["channels"][1]["enabled"] = True
             self.setup["channels"][1]["ccld"] = False
             self.setup["channels"][1]["range"] = "10 Vpeak"  # Set the correct range for force sensor
