@@ -212,10 +212,16 @@ def load_sample():
     except Exception as e:
         messagebox.showerror("Load Error", str(e))
 
+def on_closing():
+    try:
+        Lanxi.close_stream()
+    except Exception as e:
+        print(f"Error closing LAN-XI stream: {e}")
+    root.destroy()
 
 # Create the GUI
 root = tk.Tk()
-root.title("NI USB-6210 Recorder")
+root.title("HBK LAN-XI 3676 Recorder")
 
 # Metadata Controls
 control_frame = tk.Frame(root)
@@ -269,4 +275,5 @@ ax2 = ax1.twinx()
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
+root.protocol("WM_DELETE_WINDOW", on_closing)
 root.mainloop()
