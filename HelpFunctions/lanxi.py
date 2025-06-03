@@ -56,6 +56,7 @@ class LanXI:
             self.setup["channels"][1]["enabled"] = True
             self.setup["channels"][1]["ccld"] = False
             self.setup["channels"][1]["range"] = "10 Vpeak"  # Set the correct range for force sensor
+            self.setup["channels"][1]["filter"] = "DC" # Set filter to DC for force sensor
         # Remove None channels
         # self.channels = list(filter(lambda x : x != None, self.channels))
         # remove disabled channels
