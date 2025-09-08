@@ -8,12 +8,20 @@ from openapi.openapi_stream import *
 class LanXI:
     def __init__(self, ip):
         self.ip = ip
-        self.host = "http://" + self.ip
+        if self.ip is None:
+            self.host = None
+            self.sample_rate = 25600  # Default sample rate for testing
+            print("Warning: No LAN-XI IP address configured. Running in offline mode.")
+        else:
+            self.host = "http://" + self.ip
         
     def setup_stream(self):
         """
         Setup of channel 1 with a microphone
         """
+        if self.host is None:
+            print("Warning: Cannot setup stream - no LAN-XI device configured")
+            return
         # This setup is indentical to the one found in "Streaming.py", refer to this for more info.
         # Open recorder application
         requests.put(self.host + "/rest/rec/open")
@@ -93,6 +101,17 @@ class LanXI:
             time_axis: np.ndarray of time values
             data: np.ndarray shape (2, N) where N is the number of samples
         """
+        if self.host is None:
+            # Generate dummy data for testing
+            sample_rate = self.sample_rate
+            num_samples = int(sample_rate * duration)
+            time_axis = np.linspace(0, duration, num_samples, endpoint=False)
+            # Generate test signals: sine wave for ch1, cosine for ch2
+            ch1 = 0.5 * np.sin(2 * np.pi * 1000 * time_axis)  # 1kHz sine
+            ch2 = 0.3 * np.cos(2 * np.pi * 500 * time_axis)   # 500Hz cosine
+            data = np.vstack([ch1, ch2])
+            print(f"Generated {duration}s of test data")
+            return time_axis, data
         sample_rate = self.sample_rate
         num_samples = int(sample_rate * duration)
         arrays = [[], []]  # For channel 1 and 2
@@ -148,5 +167,8 @@ class LanXI:
         Properly finish and close the LAN-XI recorder application.
         Call this when closing the program.
         """
+        if self.host is None:
+            print("No LAN-XI device to close")
+            return
         requests.put(self.host + "/rest/rec/finish")
         requests.put(self.host + "/rest/rec/close")
