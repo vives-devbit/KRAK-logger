@@ -142,8 +142,8 @@ def upload_to_minio():
         print(f"Files uploaded to MinIO: {OUTPUT_PARQUET_FILE}, {OUTPUT_WAV_FILE}")
         messagebox.showinfo("Upload Complete", f"Files uploaded to MinIO")
 
-        # Refresh dropdown menu after upload
-        dropdown_menu['values'] = list_s3_files()
+        # Refresh file list after upload
+        refresh_file_list()
 
     except Exception as e:
         messagebox.showerror("Upload Failed", f"Error: {str(e)}")
@@ -193,6 +193,14 @@ def list_s3_files():
             base = os.path.splitext(os.path.basename(obj['Key']))[0]
             names.add(base)
     return sorted(names)
+
+
+def refresh_file_list():
+    """Refresh the file listbox with current S3 files"""
+    file_listbox.delete(0, tk.END)
+    s3_files = list_s3_files()
+    for file in s3_files:
+        file_listbox.insert(tk.END, file)
 
 
 
@@ -737,8 +745,8 @@ def rename_file_in_s3():
                 # Clear input field
                 rename_entry.delete(0, tk.END)
                 
-                # Update dropdown with new filename
-                dropdown_menu['values'] = list_s3_files()
+                # Update file list with new filename
+                refresh_file_list()
                 dropdown_var.set(new_sample_name)
                 
                 # Restore button
@@ -826,13 +834,38 @@ upload_button.pack(anchor="e")
 play_button = tk.Button(control_frame, text="Play Audio", command=play_audio)
 play_button.pack(anchor="e")
 
-# Dropdown to list S3 files
-# add a label in front of the dropdown menu that says "Select sample from storage:"
+# File list display for S3 files
 dropdown_label = tk.Label(control_frame, text="Select sample from S3:")
 dropdown_label.pack(anchor="e", pady=(10, 0))
+
+# Create a frame for the file list with scrollbar
+file_list_frame = tk.Frame(control_frame)
+file_list_frame.pack(anchor="e", fill=tk.BOTH, pady=5)
+
+# Add scrollbar for the listbox
+scrollbar = tk.Scrollbar(file_list_frame)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+# Create a larger listbox for better filename visibility
 dropdown_var = tk.StringVar()
-dropdown_menu = ttk.Combobox(control_frame, textvariable=dropdown_var, values=list_s3_files())
-dropdown_menu.pack(anchor="e")
+file_listbox = tk.Listbox(file_list_frame, height=8, width=45, yscrollcommand=scrollbar.set, font=("Courier", 9))
+file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+scrollbar.config(command=file_listbox.yview)
+
+# Populate the listbox
+s3_files = list_s3_files()
+for file in s3_files:
+    file_listbox.insert(tk.END, file)
+
+# Bind selection event
+def on_file_select(event):
+    selection = file_listbox.curselection()
+    if selection:
+        selected_file = file_listbox.get(selection[0])
+        dropdown_var.set(selected_file)
+
+file_listbox.bind('<<ListboxSelect>>', on_file_select)
+
 load_button = tk.Button(control_frame, text="Load Sample", command=load_sample)
 load_button.pack(anchor="e")
 
