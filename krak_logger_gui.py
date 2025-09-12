@@ -195,6 +195,110 @@ def list_s3_files():
     return sorted(names)
 
 
+def search_files_by_metadata(search_key=None, search_value=None):
+    if not search_key and not search_value:
+        return list_s3_files()
+    
+    try:
+        dotenv.load_dotenv()
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=os.getenv("MINIO_ENDPOINT"),
+            aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
+        )
+        
+        response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
+        matching_files = []
+        
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                if obj['Key'].endswith('.parquet'):
+                    try:
+                        file_response = s3_client.get_object(Bucket=BUCKET_NAME, Key=obj['Key'])
+                        df = pd.read_parquet(io.BytesIO(file_response['Body'].read()))
+                        
+                        # Check if file matches search criteria
+                        matches = True
+                        if search_key and search_value:
+                            # Search for specific key-value pair
+                            if search_key in df.attrs and str(df.attrs[search_key]).lower() == search_value.lower():
+                                matches = True
+                            else:
+                                matches = False
+                        elif search_key:
+                            # Search for files containing the key
+                            if search_key not in df.attrs:
+                                matches = False
+                        elif search_value:
+                            # Search for files containing the value in any metadata field
+                            matches = False
+                            for attr_value in df.attrs.values():
+                                if search_value.lower() in str(attr_value).lower():
+                                    matches = True
+                                    break
+                        
+                        if matches:
+                            base_name = os.path.splitext(os.path.basename(obj['Key']))[0]
+                            matching_files.append(base_name)
+                            
+                    except Exception as e:
+                        print(f"Error reading metadata from {obj['Key']}: {e}")
+                        continue
+        
+        return sorted(matching_files)
+        
+    except Exception as e:
+        messagebox.showerror("Search Error", f"Error searching files: {str(e)}")
+        return []
+
+
+def perform_search():
+    search_key = search_key_entry.get().strip()
+    search_value = search_value_entry.get().strip()
+    
+    if not search_key and not search_value:
+        messagebox.showwarning("Invalid Search", "Please enter at least a search key or value.")
+        return
+    
+    # Update button to show search is in progress
+    search_button.config(text="Searching...", state="disabled")
+    
+    def search_worker():
+        try:
+            matching_files = search_files_by_metadata(search_key if search_key else None, 
+                                                   search_value if search_value else None)
+            
+            def update_ui():
+                dropdown_menu['values'] = matching_files
+                if matching_files:
+                    dropdown_var.set("")
+                    messagebox.showinfo("Search Results", f"Found {len(matching_files)} matching files.")
+                else:
+                    dropdown_var.set("")
+                    messagebox.showinfo("Search Results", "No files found matching the search criteria.")
+                
+                search_button.config(text="Search Files", state="normal")
+            
+            root.after(0, update_ui)
+            
+        except Exception as e:
+            def show_error():
+                search_button.config(text="Search Files", state="normal")
+                messagebox.showerror("Search Error", f"Search failed: {str(e)}")
+            
+            root.after(0, show_error)
+    
+    threading.Thread(target=search_worker, daemon=True).start()
+
+
+def clear_search():
+    search_key_entry.delete(0, tk.END)
+    search_value_entry.delete(0, tk.END)
+    dropdown_menu['values'] = list_s3_files()
+    dropdown_var.set("")
+
+
 def load_sample():
     try:
         base_name = dropdown_var.get()
@@ -655,10 +759,33 @@ upload_button.pack(anchor="e")
 play_button = tk.Button(control_frame, text="Play Audio", command=play_audio)
 play_button.pack(anchor="e")
 
+# Search functionality
+search_label = tk.Label(control_frame, text="Search Files by Metadata:")
+search_label.pack(anchor="e", pady=(10, 0))
+
+search_key_frame = tk.Frame(control_frame)
+search_key_frame.pack(anchor="e", fill=tk.X, pady=2)
+tk.Label(search_key_frame, text="Key:").pack(side=tk.LEFT)
+search_key_entry = tk.Entry(search_key_frame, width=20)
+search_key_entry.pack(side=tk.LEFT, padx=(5, 0))
+
+search_value_frame = tk.Frame(control_frame)
+search_value_frame.pack(anchor="e", fill=tk.X, pady=2)
+tk.Label(search_value_frame, text="Value:").pack(side=tk.LEFT)
+search_value_entry = tk.Entry(search_value_frame, width=20)
+search_value_entry.pack(side=tk.LEFT, padx=(5, 0))
+
+search_buttons_frame = tk.Frame(control_frame)
+search_buttons_frame.pack(anchor="e", pady=2)
+search_button = tk.Button(search_buttons_frame, text="Search Files", command=perform_search)
+search_button.pack(side=tk.LEFT, padx=(0, 5))
+clear_search_button = tk.Button(search_buttons_frame, text="Clear", command=clear_search)
+clear_search_button.pack(side=tk.LEFT)
+
 # Dropdown to list S3 files
 # add a label in front of the dropdown menu that says "Select sample from storage:"
 dropdown_label = tk.Label(control_frame, text="Select sample from S3:")
-dropdown_label.pack(anchor="e")
+dropdown_label.pack(anchor="e", pady=(10, 0))
 dropdown_var = tk.StringVar()
 dropdown_menu = ttk.Combobox(control_frame, textvariable=dropdown_var, values=list_s3_files())
 dropdown_menu.pack(anchor="e")
