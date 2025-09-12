@@ -377,6 +377,175 @@ def save_metadata_to_s3():
     threading.Thread(target=save_worker, daemon=True).start()
 
 
+def update_metadata_in_s3():
+    global loaded_df, current_sample_name
+    
+    # Input validation on main thread
+    if loaded_df is None:
+        messagebox.showwarning("No Sample Loaded", "Please load a sample first before updating metadata.")
+        return
+        
+    key = update_metadata_key_entry.get().strip()
+    new_value = update_metadata_value_entry.get().strip()
+    
+    if not key:
+        messagebox.showwarning("Invalid Input", "Please enter a key for the metadata to update.")
+        return
+    
+    if not new_value:
+        messagebox.showwarning("Invalid Input", "Please enter a new value for the metadata.")
+        return
+    
+    # Check if the key exists in the current metadata
+    if key not in loaded_df.attrs:
+        messagebox.showwarning("Key Not Found", f"Metadata key '{key}' not found in current sample.")
+        return
+    
+    # Check if the new value is different from current value
+    if str(loaded_df.attrs[key]) == new_value:
+        messagebox.showwarning("No Change", "New value is the same as current value.")
+        return
+    
+    # Capture values to prevent race conditions
+    metadata_key = key
+    metadata_value = new_value
+    sample_name = current_sample_name
+    original_df = loaded_df.copy()
+    old_value = str(loaded_df.attrs[key])
+    
+    def update_worker():
+        backup_key = None
+        old_key = None
+        
+        try:
+            # Update button to show progress
+            root.after(0, lambda: update_metadata_button.config(text="Updating data...", state="disabled"))
+            
+            # Create updated dataframe
+            updated_df = original_df.copy()
+            updated_df.attrs[metadata_key] = metadata_value
+            
+            # Prepare S3 client
+            dotenv.load_dotenv()
+            s3_client = boto3.client(
+                "s3",
+                endpoint_url=os.getenv("MINIO_ENDPOINT"),
+                aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
+                aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
+            )
+            
+            # Define file names
+            original_key = f"{sample_name}.parquet"
+            backup_key = f"{sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+            old_key = f"{sample_name}_old_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+            
+            # Step 1: Verify original file exists
+            try:
+                s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
+            except Exception:
+                raise Exception(f"Original file {original_key} not found in S3")
+            
+            # Step 2: Create backup with updated data and verify upload
+            root.after(0, lambda: update_metadata_button.config(text="Creating backup..."))
+            parquet_buffer = io.BytesIO()
+            updated_df.to_parquet(parquet_buffer, index=False)
+            buffer_size = parquet_buffer.tell()
+            parquet_buffer.seek(0)
+            
+            s3_client.upload_fileobj(parquet_buffer, BUCKET_NAME, backup_key)
+            
+            # Verify backup upload
+            backup_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_key)
+            if backup_obj['ContentLength'] != buffer_size:
+                raise Exception("Backup file upload verification failed - size mismatch")
+            
+            # Step 3: Copy original to old version and verify
+            root.after(0, lambda: update_metadata_button.config(text="Backing up original..."))
+            s3_client.copy_object(
+                Bucket=BUCKET_NAME,
+                CopySource={'Bucket': BUCKET_NAME, 'Key': original_key},
+                Key=old_key
+            )
+            
+            # Verify old file copy
+            s3_client.head_object(Bucket=BUCKET_NAME, Key=old_key)
+            
+            # Step 4: Replace original with backup and verify
+            root.after(0, lambda: update_metadata_button.config(text="Finalizing update..."))
+            s3_client.copy_object(
+                Bucket=BUCKET_NAME,
+                CopySource={'Bucket': BUCKET_NAME, 'Key': backup_key},
+                Key=original_key
+            )
+            
+            # Verify final file
+            final_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
+            if final_obj['ContentLength'] != buffer_size:
+                # Attempt rollback
+                try:
+                    s3_client.copy_object(
+                        Bucket=BUCKET_NAME,
+                        CopySource={'Bucket': BUCKET_NAME, 'Key': old_key},
+                        Key=original_key
+                    )
+                    raise Exception("Final file verification failed - rolled back to original")
+                except Exception as rollback_error:
+                    raise Exception(f"Final file verification failed and rollback failed: {rollback_error}")
+            
+            # Step 5: Clean up only after successful verification
+            try:
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
+            except Exception as cleanup_error:
+                # Log but don't fail - the main operation succeeded
+                print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
+            
+            # Success - update UI on main thread
+            def success_update():
+                global loaded_df
+                loaded_df = updated_df
+                metadata_text.delete("1.0", tk.END)
+                for k, v in updated_df.attrs.items():
+                    metadata_text.insert(tk.END, f"{k}: {v}\n")
+                    
+                # Clear input fields
+                update_metadata_key_entry.delete(0, tk.END)
+                update_metadata_value_entry.delete(0, tk.END)
+                
+                # Restore button
+                update_metadata_button.config(text="Update Metadata", state="normal")
+                
+                messagebox.showinfo("Success", f"Metadata '{metadata_key}' updated from '{old_value}' to '{metadata_value}' and saved to S3.")
+            
+            root.after(0, success_update)
+            
+        except Exception as e:
+            # Error handling with attempted cleanup
+            error_msg = str(e)
+            
+            # Try to clean up any partial uploads
+            if backup_key:
+                try:
+                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
+                except:
+                    pass  # Ignore cleanup errors during error handling
+            
+            if old_key:
+                try:
+                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
+                except:
+                    pass  # Ignore cleanup errors during error handling
+            
+            def error_update():
+                update_metadata_button.config(text="Update Metadata", state="normal")
+                messagebox.showerror("Update Error", f"Failed to update metadata safely: {error_msg}")
+            
+            root.after(0, error_update)
+    
+    # Start the safe update operation in background thread
+    threading.Thread(target=update_worker, daemon=True).start()
+
+
 def rename_file_in_s3():
     global loaded_df, current_sample_name
     
@@ -690,6 +859,26 @@ metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0))
 
 save_metadata_button = tk.Button(control_frame, text="Save Metadata to S3", command=lambda: save_metadata_to_s3())
 save_metadata_button.pack(anchor="e", pady=(5, 0))
+
+# Add update metadata section
+update_metadata_label = tk.Label(control_frame, text="Update Existing Metadata:")
+update_metadata_label.pack(anchor="e", pady=(10, 0))
+
+# Key-value input for updating metadata
+update_metadata_key_frame = tk.Frame(control_frame)
+update_metadata_key_frame.pack(anchor="e", fill=tk.X, pady=2)
+tk.Label(update_metadata_key_frame, text="Key:").pack(side=tk.LEFT)
+update_metadata_key_entry = tk.Entry(update_metadata_key_frame, width=15)
+update_metadata_key_entry.pack(side=tk.LEFT, padx=(5, 0))
+
+update_metadata_value_frame = tk.Frame(control_frame)
+update_metadata_value_frame.pack(anchor="e", fill=tk.X, pady=2)
+tk.Label(update_metadata_value_frame, text="New Value:").pack(side=tk.LEFT)
+update_metadata_value_entry = tk.Entry(update_metadata_value_frame, width=15)
+update_metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0))
+
+update_metadata_button = tk.Button(control_frame, text="Update Metadata", command=lambda: update_metadata_in_s3())
+update_metadata_button.pack(anchor="e", pady=(5, 0))
 
 # Add rename file section
 rename_label = tk.Label(control_frame, text="Rename File:")
