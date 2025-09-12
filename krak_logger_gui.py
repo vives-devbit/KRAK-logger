@@ -374,6 +374,231 @@ def save_metadata_to_s3():
     # Start the safe save operation in background thread
     threading.Thread(target=save_worker, daemon=True).start()
 
+
+def rename_file_in_s3():
+    global loaded_df, current_sample_name
+    
+    # Input validation on main thread
+    if loaded_df is None:
+        messagebox.showwarning("No Sample Loaded", "Please load a sample first before renaming.")
+        return
+        
+    new_name = rename_entry.get().strip()
+    
+    if not new_name:
+        messagebox.showwarning("Invalid Input", "Please enter a new filename.")
+        return
+    
+    # Remove file extension if provided
+    if new_name.endswith('.parquet'):
+        new_name = new_name[:-8]
+    if new_name.endswith('.wav'):
+        new_name = new_name[:-4]
+        
+    if new_name == current_sample_name:
+        messagebox.showwarning("Invalid Input", "New filename must be different from current filename.")
+        return
+    
+    # Capture values to prevent race conditions
+    old_sample_name = current_sample_name
+    new_sample_name = new_name
+    original_df = loaded_df.copy()
+    
+    def rename_worker():
+        backup_parquet_key = None
+        backup_wav_key = None
+        temp_parquet_key = None
+        temp_wav_key = None
+        
+        try:
+            # Update button to show progress
+            root.after(0, lambda: rename_button.config(text="Renaming files...", state="disabled"))
+            
+            # Create updated dataframe with old filename in metadata
+            updated_df = original_df.copy()
+            updated_df.attrs['old_filename'] = old_sample_name
+            
+            # Prepare S3 client
+            dotenv.load_dotenv()
+            s3_client = boto3.client(
+                "s3",
+                endpoint_url=os.getenv("MINIO_ENDPOINT"),
+                aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
+                aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
+            )
+            
+            # Define file names
+            old_parquet_key = f"{old_sample_name}.parquet"
+            old_wav_key = f"{old_sample_name}.wav"
+            new_parquet_key = f"{new_sample_name}.parquet"
+            new_wav_key = f"{new_sample_name}.wav"
+            
+            backup_parquet_key = f"{old_sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+            backup_wav_key = f"{old_sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+            temp_parquet_key = f"{new_sample_name}_temp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+            temp_wav_key = f"{new_sample_name}_temp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+            
+            # Step 1: Verify original files exist
+            try:
+                s3_client.head_object(Bucket=BUCKET_NAME, Key=old_parquet_key)
+                parquet_exists = True
+            except Exception:
+                raise Exception(f"Original parquet file {old_parquet_key} not found in S3")
+            
+            try:
+                s3_client.head_object(Bucket=BUCKET_NAME, Key=old_wav_key)
+                wav_exists = True
+            except Exception:
+                wav_exists = False
+                print(f"Warning: WAV file {old_wav_key} not found, will only rename parquet file")
+            
+            # Step 2: Check if target files already exist
+            try:
+                s3_client.head_object(Bucket=BUCKET_NAME, Key=new_parquet_key)
+                raise Exception(f"Target file {new_parquet_key} already exists")
+            except s3_client.exceptions.NoSuchKey:
+                pass  # Good, target doesn't exist
+            
+            if wav_exists:
+                try:
+                    s3_client.head_object(Bucket=BUCKET_NAME, Key=new_wav_key)
+                    raise Exception(f"Target file {new_wav_key} already exists")
+                except s3_client.exceptions.NoSuchKey:
+                    pass  # Good, target doesn't exist
+            
+            # Step 3: Create updated parquet file with old_filename metadata and upload to temp location
+            root.after(0, lambda: rename_button.config(text="Creating updated parquet..."))
+            parquet_buffer = io.BytesIO()
+            updated_df.to_parquet(parquet_buffer, index=False)
+            buffer_size = parquet_buffer.tell()
+            parquet_buffer.seek(0)
+            
+            s3_client.upload_fileobj(parquet_buffer, BUCKET_NAME, temp_parquet_key)
+            
+            # Verify temp parquet upload
+            temp_parquet_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=temp_parquet_key)
+            if temp_parquet_obj['ContentLength'] != buffer_size:
+                raise Exception("Temporary parquet file upload verification failed - size mismatch")
+            
+            # Step 4: Copy WAV file to temp location if it exists
+            if wav_exists:
+                root.after(0, lambda: rename_button.config(text="Copying WAV file..."))
+                s3_client.copy_object(
+                    Bucket=BUCKET_NAME,
+                    CopySource={'Bucket': BUCKET_NAME, 'Key': old_wav_key},
+                    Key=temp_wav_key
+                )
+                
+                # Verify temp wav copy
+                s3_client.head_object(Bucket=BUCKET_NAME, Key=temp_wav_key)
+            
+            # Step 5: Create backups of original files
+            root.after(0, lambda: rename_button.config(text="Creating backups..."))
+            s3_client.copy_object(
+                Bucket=BUCKET_NAME,
+                CopySource={'Bucket': BUCKET_NAME, 'Key': old_parquet_key},
+                Key=backup_parquet_key
+            )
+            
+            if wav_exists:
+                s3_client.copy_object(
+                    Bucket=BUCKET_NAME,
+                    CopySource={'Bucket': BUCKET_NAME, 'Key': old_wav_key},
+                    Key=backup_wav_key
+                )
+            
+            # Verify backups
+            s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_parquet_key)
+            if wav_exists:
+                s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_wav_key)
+            
+            # Step 6: Move temp files to final locations
+            root.after(0, lambda: rename_button.config(text="Finalizing rename..."))
+            s3_client.copy_object(
+                Bucket=BUCKET_NAME,
+                CopySource={'Bucket': BUCKET_NAME, 'Key': temp_parquet_key},
+                Key=new_parquet_key
+            )
+            
+            if wav_exists:
+                s3_client.copy_object(
+                    Bucket=BUCKET_NAME,
+                    CopySource={'Bucket': BUCKET_NAME, 'Key': temp_wav_key},
+                    Key=new_wav_key
+                )
+            
+            # Verify final files
+            final_parquet_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=new_parquet_key)
+            if final_parquet_obj['ContentLength'] != buffer_size:
+                raise Exception("Final parquet file verification failed - size mismatch")
+            
+            if wav_exists:
+                s3_client.head_object(Bucket=BUCKET_NAME, Key=new_wav_key)
+            
+            # Step 7: Delete original files only after successful verification
+            root.after(0, lambda: rename_button.config(text="Cleaning up..."))
+            s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_parquet_key)
+            if wav_exists:
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_wav_key)
+            
+            # Step 8: Clean up temporary and backup files
+            try:
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=temp_parquet_key)
+                if wav_exists:
+                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=temp_wav_key)
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_parquet_key)
+                if wav_exists:
+                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_wav_key)
+            except Exception as cleanup_error:
+                print(f"Warning: Cleanup failed but rename was successful: {cleanup_error}")
+            
+            # Success - update UI on main thread
+            def success_update():
+                global loaded_df, current_sample_name
+                loaded_df = updated_df
+                current_sample_name = new_sample_name
+                
+                # Update metadata display
+                metadata_text.delete("1.0", tk.END)
+                for k, v in updated_df.attrs.items():
+                    metadata_text.insert(tk.END, f"{k}: {v}\n")
+                    
+                # Clear input field
+                rename_entry.delete(0, tk.END)
+                
+                # Update dropdown with new filename
+                dropdown_menu['values'] = list_s3_files()
+                dropdown_var.set(new_sample_name)
+                
+                # Restore button
+                rename_button.config(text="Rename File", state="normal")
+                
+                messagebox.showinfo("Success", f"File renamed from '{old_sample_name}' to '{new_sample_name}' successfully.\nOld filename stored in metadata.")
+            
+            root.after(0, success_update)
+            
+        except Exception as e:
+            # Error handling with attempted cleanup and rollback
+            error_msg = str(e)
+            
+            # Try to clean up any temporary files
+            cleanup_files = [temp_parquet_key, temp_wav_key, backup_parquet_key, backup_wav_key]
+            for cleanup_file in cleanup_files:
+                if cleanup_file:
+                    try:
+                        s3_client.delete_object(Bucket=BUCKET_NAME, Key=cleanup_file)
+                    except:
+                        pass  # Ignore cleanup errors during error handling
+            
+            def error_update():
+                rename_button.config(text="Rename File", state="normal")
+                messagebox.showerror("Rename Error", f"Failed to rename file safely: {error_msg}")
+            
+            root.after(0, error_update)
+    
+    # Start the safe rename operation in background thread
+    threading.Thread(target=rename_worker, daemon=True).start()
+
 def on_closing():
     try:
         Lanxi.close_stream()
@@ -463,6 +688,19 @@ metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0))
 
 save_metadata_button = tk.Button(control_frame, text="Save Metadata to S3", command=lambda: save_metadata_to_s3())
 save_metadata_button.pack(anchor="e", pady=(5, 0))
+
+# Add rename file section
+rename_label = tk.Label(control_frame, text="Rename File:")
+rename_label.pack(anchor="e", pady=(10, 0))
+
+rename_frame = tk.Frame(control_frame)
+rename_frame.pack(anchor="e", fill=tk.X, pady=2)
+tk.Label(rename_frame, text="New Name:").pack(side=tk.LEFT)
+rename_entry = tk.Entry(rename_frame, width=15)
+rename_entry.pack(side=tk.LEFT, padx=(5, 0))
+
+rename_button = tk.Button(control_frame, text="Rename File", command=lambda: rename_file_in_s3())
+rename_button.pack(anchor="e", pady=(5, 0))
 
 fig, ax1 = plt.subplots()
 ax2 = ax1.twinx()
