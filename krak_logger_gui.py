@@ -4,7 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.io.wavfile as wav
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
 import boto3
@@ -13,6 +13,7 @@ import datetime
 import sounddevice as sd
 import os
 import io
+import subprocess
 
 # Global variables
 recording = False
@@ -24,6 +25,11 @@ parameter_entries = {}
 TEMP_DIR = "temp_files"
 loaded_df = None  # For storing loaded sample data
 current_sample_name = None  # For storing current sample name
+excel_metadata_df = None  # For storing Excel metadata
+excel_file_path = None  # For storing current Excel file path
+loaded_excel_metadata = {}  # For storing currently loaded metadata from Excel
+sort_by = "time"  # Default sort by time
+sort_order = "desc"  # Default sort newest first
 
 # IP of Lan-XI
 dotenv.load_dotenv()
@@ -32,6 +38,126 @@ Lanxi = LanXI(ip)
 Lanxi.setup_stream()
 SAMPLE_RATE = Lanxi.sample_rate
 NUM_SAMPLES = SAMPLE_RATE * DURATION
+
+def select_excel_file():
+    global excel_metadata_df, excel_file_path
+    file_path = filedialog.askopenfilename(
+        title="Select Excel Metadata File",
+        filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
+    )
+    if file_path:
+        try:
+            excel_metadata_df = pd.read_excel(file_path)
+            excel_file_path = file_path
+            excel_file_label.config(text=f"Excel file: {os.path.basename(file_path)}")
+            messagebox.showinfo("Success", f"Excel file loaded successfully.\nColumns: {list(excel_metadata_df.columns)}")
+            # Clear any previously loaded metadata
+            clear_excel_metadata_display()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load Excel file: {str(e)}")
+            excel_metadata_df = None
+            excel_file_path = None
+            excel_file_label.config(text="No Excel file selected")
+
+def load_metadata_from_excel():
+    global loaded_excel_metadata
+    if excel_metadata_df is None:
+        messagebox.showwarning("No Excel File", "Please select an Excel file first.")
+        return
+
+    ref_number = ref_number_entry.get().strip()
+    if not ref_number:
+        messagebox.showwarning("Invalid Input", "Please enter a reference number.")
+        return
+
+    try:
+        # Convert ref_number to appropriate type for comparison
+        try:
+            ref_num = int(ref_number)
+        except ValueError:
+            ref_num = ref_number
+
+        # Find the row with matching reference number (first column)
+        ref_col = excel_metadata_df.columns[0]
+        matching_rows = excel_metadata_df[excel_metadata_df[ref_col] == ref_num]
+
+        if matching_rows.empty:
+            # Try string comparison if int comparison failed
+            matching_rows = excel_metadata_df[excel_metadata_df[ref_col].astype(str) == str(ref_number)]
+
+        if matching_rows.empty:
+            messagebox.showwarning("Not Found", f"Reference number '{ref_number}' not found in Excel file.")
+            return
+
+        # Get the first matching row
+        row = matching_rows.iloc[0]
+
+        # Load metadata from all columns except the first (reference) column
+        loaded_excel_metadata.clear()
+        for col in excel_metadata_df.columns[1:]:
+            value = row[col]
+            if pd.notna(value):  # Only add non-empty values
+                loaded_excel_metadata[col] = str(value)
+
+        # Add automatic timestamp and date
+        current_time = datetime.datetime.now()
+        loaded_excel_metadata['Date'] = current_time.strftime("%Y-%m-%d")
+        loaded_excel_metadata['Timestamp'] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Display loaded metadata for verification
+        display_excel_metadata()
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to load metadata: {str(e)}")
+
+def display_excel_metadata():
+    excel_metadata_text.delete("1.0", tk.END)
+    for key, value in loaded_excel_metadata.items():
+        excel_metadata_text.insert(tk.END, f"{key}: {value}\n")
+
+def clear_excel_metadata_display():
+    global loaded_excel_metadata
+    loaded_excel_metadata.clear()
+    excel_metadata_text.delete("1.0", tk.END)
+    ref_number_entry.delete(0, tk.END)
+    # Clear additional metadata entries
+    for widget in additional_metadata_frame.winfo_children():
+        widget.destroy()
+
+def add_additional_metadata_field():
+    frame = tk.Frame(additional_metadata_frame)
+    frame.pack(fill=tk.X, padx=5, pady=2)
+
+    tk.Label(frame, text="Key:").pack(side=tk.LEFT)
+    key_entry = tk.Entry(frame, width=10)
+    key_entry.pack(side=tk.LEFT, padx=(2, 5))
+
+    tk.Label(frame, text="Value:").pack(side=tk.LEFT)
+    value_entry = tk.Entry(frame, width=15)
+    value_entry.pack(side=tk.LEFT, padx=(2, 5))
+
+    remove_btn = tk.Button(frame, text="Remove", command=lambda: frame.destroy())
+    remove_btn.pack(side=tk.LEFT, padx=(5, 0))
+
+
+
+
+
+
+def get_all_metadata():
+    """Combine Excel metadata with additional metadata fields"""
+    all_metadata = loaded_excel_metadata.copy()
+
+    # Add additional metadata from manual entry fields
+    for frame in additional_metadata_frame.winfo_children():
+        entries = [w for w in frame.winfo_children() if isinstance(w, tk.Entry)]
+        if len(entries) >= 2:
+            key = entries[0].get().strip()
+            value = entries[1].get().strip()
+            if key and value:
+                all_metadata[key] = value
+
+    return all_metadata
 
 def update_parameters():
     global parameter_entries
@@ -53,9 +179,17 @@ def update_parameters():
 
 def generate_filenames():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    product_name = product_entry.get().replace(" ", "_")
-    wav_filename = f"{product_name}_{timestamp}.wav"
-    parquet_filename = f"{product_name}_{timestamp}.parquet"
+
+    # Check if we have Excel metadata with ID field
+    if loaded_excel_metadata and 'ID' in loaded_excel_metadata:
+        id_value = loaded_excel_metadata['ID']
+        base_name = f"{timestamp}-({id_value})"
+    else:
+        # Fallback to timestamp if no Excel metadata
+        base_name = f"recording_{timestamp}"
+
+    wav_filename = f"{base_name}.wav"
+    parquet_filename = f"{base_name}.parquet"
     return wav_filename, parquet_filename
 
 
@@ -98,14 +232,15 @@ def record_data():
 
 def save_to_parquet():
     if recorded_data is not None:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        metadata = {
-            "Product": product_entry.get(),
-            "Measurement Parameters": measurement_entry.get(),
-            "Timestamp": timestamp,
-            "Sample Rate (Hz)": Lanxi.sample_rate,
-        }
+        # Get all metadata (Excel + additional)
+        metadata = get_all_metadata()
 
+        # Add traditional metadata fields
+        metadata.update({
+            "Sample Rate (Hz)": Lanxi.sample_rate,
+        })
+
+        # Add parameter entries
         for param, entry in parameter_entries.items():
             metadata[param] = entry.get()
 
@@ -142,8 +277,14 @@ def upload_to_minio():
         print(f"Files uploaded to MinIO: {OUTPUT_PARQUET_FILE}, {OUTPUT_WAV_FILE}")
         messagebox.showinfo("Upload Complete", f"Files uploaded to MinIO")
 
+        # Get the uploaded file base name (without extension)
+        uploaded_file_base = os.path.splitext(os.path.basename(OUTPUT_PARQUET_FILE))[0]
+
         # Refresh file list after upload
         refresh_file_list()
+
+        # Auto-select the uploaded file
+        select_uploaded_file(uploaded_file_base)
 
     except Exception as e:
         messagebox.showerror("Upload Failed", f"Error: {str(e)}")
@@ -178,7 +319,13 @@ def update_plot(time_axis, data, title="Recorded Data"):
 
 
 
-def list_s3_files():
+def list_s3_files(sort_by="name", sort_order="asc"):
+    """List S3 files with sorting options
+
+    Args:
+        sort_by: "name" or "time"
+        sort_order: "asc" (1-9) or "desc" (9-1)
+    """
     dotenv.load_dotenv()
     s3_client = boto3.client(
         "s3",
@@ -187,20 +334,58 @@ def list_s3_files():
         aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
     )
     response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
-    names = set()
-    if 'Contents' in response:
-        for obj in response['Contents']:
-            base = os.path.splitext(os.path.basename(obj['Key']))[0]
-            names.add(base)
-    return sorted(names)
+
+    if 'Contents' not in response:
+        return []
+
+    # Create a dictionary to store file info
+    files_info = {}
+    for obj in response['Contents']:
+        if obj['Key'].endswith('.parquet'):  # Only process parquet files
+            base_name = os.path.splitext(os.path.basename(obj['Key']))[0]
+            if base_name not in files_info:
+                files_info[base_name] = {
+                    'name': base_name,
+                    'last_modified': obj['LastModified']
+                }
+
+    # Sort based on criteria
+    if sort_by == "time":
+        sorted_files = sorted(files_info.values(),
+                            key=lambda x: x['last_modified'],
+                            reverse=(sort_order == "desc"))
+    else:  # sort by name
+        sorted_files = sorted(files_info.values(),
+                            key=lambda x: x['name'],
+                            reverse=(sort_order == "desc"))
+
+    return [file_info['name'] for file_info in sorted_files]
 
 
 def refresh_file_list():
     """Refresh the file listbox with current S3 files"""
+    global sort_by, sort_order
     file_listbox.delete(0, tk.END)
-    s3_files = list_s3_files()
+    s3_files = list_s3_files(sort_by, sort_order)
     for file in s3_files:
         file_listbox.insert(tk.END, file)
+
+def change_sort_criteria():
+    """Handle sort criteria changes and refresh the list"""
+    global sort_by, sort_order
+    sort_by = sort_by_var.get()
+    sort_order = sort_order_var.get()
+    refresh_file_list()
+
+def select_uploaded_file(file_base_name):
+    """Select and highlight the uploaded file in the listbox"""
+    for i in range(file_listbox.size()):
+        if file_listbox.get(i) == file_base_name:
+            file_listbox.selection_clear(0, tk.END)
+            file_listbox.selection_set(i)
+            file_listbox.see(i)  # Scroll to make it visible
+            dropdown_var.set(file_base_name)
+            break
 
 
 
@@ -231,328 +416,16 @@ def load_sample():
         messagebox.showerror("Load Error", str(e))
 
 
-def save_metadata_to_s3():
-    global loaded_df, current_sample_name
-    
-    # Input validation on main thread
-    if loaded_df is None:
-        messagebox.showwarning("No Sample Loaded", "Please load a sample first before adding metadata.")
-        return
-        
-    key = metadata_key_entry.get().strip()
-    value = metadata_value_entry.get().strip()
-    
-    if not key or not value:
-        messagebox.showwarning("Invalid Input", "Please enter both key and value for metadata.")
-        return
-    
-    # Capture values to prevent race conditions
-    metadata_key = key
-    metadata_value = value
-    sample_name = current_sample_name
-    original_df = loaded_df.copy()
-    
-    def save_worker():
-        backup_key = None
-        old_key = None
-        
-        try:
-            # Update button to show progress
-            root.after(0, lambda: save_metadata_button.config(text="Saving data...", state="disabled"))
-            
-            # Create updated dataframe
-            updated_df = original_df.copy()
-            updated_df.attrs[metadata_key] = metadata_value
-            
-            # Prepare S3 client
-            dotenv.load_dotenv()
-            s3_client = boto3.client(
-                "s3",
-                endpoint_url=os.getenv("MINIO_ENDPOINT"),
-                aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-                aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
-            )
-            
-            # Define file names
-            original_key = f"{sample_name}.parquet"
-            backup_key = f"{sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            old_key = f"{sample_name}_old_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            
-            # Step 1: Verify original file exists
-            try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            except Exception:
-                raise Exception(f"Original file {original_key} not found in S3")
-            
-            # Step 2: Create backup with updated data and verify upload
-            root.after(0, lambda: save_metadata_button.config(text="Creating backup..."))
-            parquet_buffer = io.BytesIO()
-            updated_df.to_parquet(parquet_buffer, index=False)
-            buffer_size = parquet_buffer.tell()
-            parquet_buffer.seek(0)
-            
-            s3_client.upload_fileobj(parquet_buffer, BUCKET_NAME, backup_key)
-            
-            # Verify backup upload
-            backup_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_key)
-            if backup_obj['ContentLength'] != buffer_size:
-                raise Exception("Backup file upload verification failed - size mismatch")
-            
-            # Step 3: Copy original to old version and verify
-            root.after(0, lambda: save_metadata_button.config(text="Backing up original..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': original_key},
-                Key=old_key
-            )
-            
-            # Verify old file copy
-            s3_client.head_object(Bucket=BUCKET_NAME, Key=old_key)
-            
-            # Step 4: Replace original with backup and verify
-            root.after(0, lambda: save_metadata_button.config(text="Finalizing save..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': backup_key},
-                Key=original_key
-            )
-            
-            # Verify final file
-            final_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            if final_obj['ContentLength'] != buffer_size:
-                # Attempt rollback
-                try:
-                    s3_client.copy_object(
-                        Bucket=BUCKET_NAME,
-                        CopySource={'Bucket': BUCKET_NAME, 'Key': old_key},
-                        Key=original_key
-                    )
-                    raise Exception("Final file verification failed - rolled back to original")
-                except Exception as rollback_error:
-                    raise Exception(f"Final file verification failed and rollback failed: {rollback_error}")
-            
-            # Step 5: Clean up only after successful verification
-            try:
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
-            except Exception as cleanup_error:
-                # Log but don't fail - the main operation succeeded
-                print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
-            
-            # Success - update UI on main thread
-            def success_update():
-                global loaded_df
-                loaded_df = updated_df
-                metadata_text.delete("1.0", tk.END)
-                for k, v in updated_df.attrs.items():
-                    metadata_text.insert(tk.END, f"{k}: {v}\n")
-                    
-                # Clear input fields
-                metadata_key_entry.delete(0, tk.END)
-                metadata_value_entry.delete(0, tk.END)
-                
-                # Restore button
-                save_metadata_button.config(text="Save Metadata to S3", state="normal")
-                
-                messagebox.showinfo("Success", f"Metadata '{metadata_key}' added and saved to S3 safely.")
-            
-            root.after(0, success_update)
-            
-        except Exception as e:
-            # Error handling with attempted cleanup
-            error_msg = str(e)
-            
-            # Try to clean up any partial uploads
-            if backup_key:
-                try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
-                except:
-                    pass  # Ignore cleanup errors during error handling
-            
-            if old_key:
-                try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
-                except:
-                    pass  # Ignore cleanup errors during error handling
-            
-            def error_update():
-                save_metadata_button.config(text="Save Metadata to S3", state="normal")
-                messagebox.showerror("Save Error", f"Failed to save metadata safely: {error_msg}")
-            
-            root.after(0, error_update)
-    
-    # Start the safe save operation in background thread
-    threading.Thread(target=save_worker, daemon=True).start()
 
 
-def update_metadata_in_s3():
-    global loaded_df, current_sample_name
-    
-    # Input validation on main thread
-    if loaded_df is None:
-        messagebox.showwarning("No Sample Loaded", "Please load a sample first before updating metadata.")
-        return
-        
-    key = update_metadata_key_entry.get().strip()
-    new_value = update_metadata_value_entry.get().strip()
-    
-    if not key:
-        messagebox.showwarning("Invalid Input", "Please enter a key for the metadata to update.")
-        return
-    
-    if not new_value:
-        messagebox.showwarning("Invalid Input", "Please enter a new value for the metadata.")
-        return
-    
-    # Check if the key exists in the current metadata
-    if key not in loaded_df.attrs:
-        messagebox.showwarning("Key Not Found", f"Metadata key '{key}' not found in current sample.")
-        return
-    
-    # Check if the new value is different from current value
-    if str(loaded_df.attrs[key]) == new_value:
-        messagebox.showwarning("No Change", "New value is the same as current value.")
-        return
-    
-    # Capture values to prevent race conditions
-    metadata_key = key
-    metadata_value = new_value
-    sample_name = current_sample_name
-    original_df = loaded_df.copy()
-    old_value = str(loaded_df.attrs[key])
-    
-    def update_worker():
-        backup_key = None
-        old_key = None
-        
-        try:
-            # Update button to show progress
-            root.after(0, lambda: update_metadata_button.config(text="Updating data...", state="disabled"))
-            
-            # Create updated dataframe
-            updated_df = original_df.copy()
-            updated_df.attrs[metadata_key] = metadata_value
-            
-            # Prepare S3 client
-            dotenv.load_dotenv()
-            s3_client = boto3.client(
-                "s3",
-                endpoint_url=os.getenv("MINIO_ENDPOINT"),
-                aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-                aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
-            )
-            
-            # Define file names
-            original_key = f"{sample_name}.parquet"
-            backup_key = f"{sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            old_key = f"{sample_name}_old_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            
-            # Step 1: Verify original file exists
-            try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            except Exception:
-                raise Exception(f"Original file {original_key} not found in S3")
-            
-            # Step 2: Create backup with updated data and verify upload
-            root.after(0, lambda: update_metadata_button.config(text="Creating backup..."))
-            parquet_buffer = io.BytesIO()
-            updated_df.to_parquet(parquet_buffer, index=False)
-            buffer_size = parquet_buffer.tell()
-            parquet_buffer.seek(0)
-            
-            s3_client.upload_fileobj(parquet_buffer, BUCKET_NAME, backup_key)
-            
-            # Verify backup upload
-            backup_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_key)
-            if backup_obj['ContentLength'] != buffer_size:
-                raise Exception("Backup file upload verification failed - size mismatch")
-            
-            # Step 3: Copy original to old version and verify
-            root.after(0, lambda: update_metadata_button.config(text="Backing up original..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': original_key},
-                Key=old_key
-            )
-            
-            # Verify old file copy
-            s3_client.head_object(Bucket=BUCKET_NAME, Key=old_key)
-            
-            # Step 4: Replace original with backup and verify
-            root.after(0, lambda: update_metadata_button.config(text="Finalizing update..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': backup_key},
-                Key=original_key
-            )
-            
-            # Verify final file
-            final_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            if final_obj['ContentLength'] != buffer_size:
-                # Attempt rollback
-                try:
-                    s3_client.copy_object(
-                        Bucket=BUCKET_NAME,
-                        CopySource={'Bucket': BUCKET_NAME, 'Key': old_key},
-                        Key=original_key
-                    )
-                    raise Exception("Final file verification failed - rolled back to original")
-                except Exception as rollback_error:
-                    raise Exception(f"Final file verification failed and rollback failed: {rollback_error}")
-            
-            # Step 5: Clean up only after successful verification
-            try:
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
-            except Exception as cleanup_error:
-                # Log but don't fail - the main operation succeeded
-                print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
-            
-            # Success - update UI on main thread
-            def success_update():
-                global loaded_df
-                loaded_df = updated_df
-                metadata_text.delete("1.0", tk.END)
-                for k, v in updated_df.attrs.items():
-                    metadata_text.insert(tk.END, f"{k}: {v}\n")
-                    
-                # Clear input fields
-                update_metadata_key_entry.delete(0, tk.END)
-                update_metadata_value_entry.delete(0, tk.END)
-                
-                # Restore button
-                update_metadata_button.config(text="Update Metadata", state="normal")
-                
-                messagebox.showinfo("Success", f"Metadata '{metadata_key}' updated from '{old_value}' to '{metadata_value}' and saved to S3.")
-            
-            root.after(0, success_update)
-            
-        except Exception as e:
-            # Error handling with attempted cleanup
-            error_msg = str(e)
-            
-            # Try to clean up any partial uploads
-            if backup_key:
-                try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
-                except:
-                    pass  # Ignore cleanup errors during error handling
-            
-            if old_key:
-                try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
-                except:
-                    pass  # Ignore cleanup errors during error handling
-            
-            def error_update():
-                update_metadata_button.config(text="Update Metadata", state="normal")
-                messagebox.showerror("Update Error", f"Failed to update metadata safely: {error_msg}")
-            
-            root.after(0, error_update)
-    
-    # Start the safe update operation in background thread
-    threading.Thread(target=update_worker, daemon=True).start()
 
+
+def launch_editor():
+    """Launch the krak_editor_gui.py application"""
+    try:
+        subprocess.Popen(["python", "krak_editor_gui.py"])
+    except Exception as e:
+        messagebox.showerror("Launch Error", f"Failed to launch editor: {str(e)}")
 
 def rename_file_in_s3():
     global loaded_df, current_sample_name
@@ -804,17 +677,48 @@ root.title("HBK LAN-XI 3676 Recorder")
 control_frame = tk.Frame(root)
 control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
 
-tk.Label(control_frame, text="Product:").pack(anchor="e")
-product_entry = tk.Entry(control_frame)
-product_entry.pack(anchor="e")
-
-tk.Label(control_frame, text="Measurement Parameters:").pack(anchor="e")
-measurement_entry = tk.Entry(control_frame)
-measurement_entry.pack(anchor="e")
-measurement_entry.bind("<KeyRelease>", lambda event: update_parameters())
 
 parameter_frame = tk.Frame(control_frame)
 parameter_frame.pack(anchor="e")
+
+# Excel Metadata Section
+excel_section = tk.LabelFrame(control_frame, text="Excel Metadata", padx=5, pady=5)
+excel_section.pack(anchor="e", fill=tk.X, pady=(10, 5))
+
+# Excel file selection
+excel_file_frame = tk.Frame(excel_section)
+excel_file_frame.pack(fill=tk.X, pady=2)
+select_excel_btn = tk.Button(excel_file_frame, text="Select Excel File", command=select_excel_file)
+select_excel_btn.pack(side=tk.LEFT)
+excel_file_label = tk.Label(excel_file_frame, text="No Excel file selected", fg="gray")
+excel_file_label.pack(side=tk.LEFT, padx=(10, 0))
+
+# Reference number input
+ref_frame = tk.Frame(excel_section)
+ref_frame.pack(fill=tk.X, pady=2)
+tk.Label(ref_frame, text="Reference Number:").pack(side=tk.LEFT)
+ref_number_entry = tk.Entry(ref_frame, width=10)
+ref_number_entry.pack(side=tk.LEFT, padx=(5, 5))
+load_metadata_btn = tk.Button(ref_frame, text="Load Metadata", command=load_metadata_from_excel)
+load_metadata_btn.pack(side=tk.LEFT)
+
+# Excel metadata display
+excel_metadata_text = tk.Text(excel_section, height=6, width=40)
+excel_metadata_text.pack(fill=tk.X, pady=2)
+
+# Additional metadata section
+additional_section = tk.LabelFrame(control_frame, text="Additional Metadata", padx=5, pady=5)
+additional_section.pack(anchor="e", fill=tk.X, pady=5)
+
+additional_metadata_frame = tk.Frame(additional_section)
+additional_metadata_frame.pack(fill=tk.X)
+
+add_field_btn = tk.Button(additional_section, text="Add Metadata Field", command=add_additional_metadata_field)
+add_field_btn.pack(pady=2)
+
+clear_metadata_btn = tk.Button(additional_section, text="Clear All Metadata", command=clear_excel_metadata_display)
+clear_metadata_btn.pack(pady=2)
+
 
 duration_label = tk.Label(control_frame, text="Duration (s):")
 duration_label.pack(anchor="e")
@@ -822,24 +726,46 @@ duration_entry = tk.Entry(control_frame)
 duration_entry.insert(0, "1")
 duration_entry.pack(anchor="e")
 
-record_button = tk.Button(control_frame, text="Start Recording", command=start_recording)
+# Recording section
+recording_section = tk.LabelFrame(control_frame, text="Recording", padx=5, pady=5)
+recording_section.pack(anchor="e", fill=tk.X, pady=(10, 5))
+
+record_button = tk.Button(recording_section, text="Start Recording", command=start_recording)
 record_button.pack(anchor="e")
 
-save_parquet_button = tk.Button(control_frame, text="Save to Parquet", command=save_to_parquet)
-save_parquet_button.pack(anchor="e")
-
-upload_button = tk.Button(control_frame, text="Upload to MinIO", command=upload_to_minio)
+upload_button = tk.Button(recording_section, text="Upload to MinIO", command=upload_to_minio)
 upload_button.pack(anchor="e")
 
-play_button = tk.Button(control_frame, text="Play Audio", command=play_audio)
+play_button = tk.Button(recording_section, text="Play Audio", command=play_audio)
 play_button.pack(anchor="e")
 
 # File list display for S3 files
-dropdown_label = tk.Label(control_frame, text="Select sample from S3:")
-dropdown_label.pack(anchor="e", pady=(10, 0))
+file_section = tk.LabelFrame(control_frame, text="File Management", padx=5, pady=5)
+file_section.pack(anchor="e", fill=tk.BOTH, expand=True, pady=(10, 5))
+
+dropdown_label = tk.Label(file_section, text="Select sample from S3:")
+dropdown_label.pack(anchor="e", pady=(5, 0))
+
+# Sorting options frame
+sort_frame = tk.Frame(file_section)
+sort_frame.pack(anchor="e", pady=(5, 0))
+
+tk.Label(sort_frame, text="Sort by:").pack(side=tk.LEFT, padx=(0, 5))
+sort_by_var = tk.StringVar(value=sort_by)
+sort_by_combo = ttk.Combobox(sort_frame, textvariable=sort_by_var, values=["name", "time"],
+                             width=8, state="readonly")
+sort_by_combo.pack(side=tk.LEFT, padx=(0, 10))
+sort_by_combo.bind('<<ComboboxSelected>>', lambda e: change_sort_criteria())
+
+tk.Label(sort_frame, text="Order:").pack(side=tk.LEFT, padx=(0, 5))
+sort_order_var = tk.StringVar(value=sort_order)
+sort_order_combo = ttk.Combobox(sort_frame, textvariable=sort_order_var,
+                                values=["asc", "desc"], width=6, state="readonly")
+sort_order_combo.pack(side=tk.LEFT)
+sort_order_combo.bind('<<ComboboxSelected>>', lambda e: change_sort_criteria())
 
 # Create a frame for the file list with scrollbar
-file_list_frame = tk.Frame(control_frame)
+file_list_frame = tk.Frame(file_section)
 file_list_frame.pack(anchor="e", fill=tk.BOTH, pady=5)
 
 # Add scrollbar for the listbox
@@ -852,10 +778,8 @@ file_listbox = tk.Listbox(file_list_frame, height=8, width=45, yscrollcommand=sc
 file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 scrollbar.config(command=file_listbox.yview)
 
-# Populate the listbox
-s3_files = list_s3_files()
-for file in s3_files:
-    file_listbox.insert(tk.END, file)
+# Populate the listbox with initial sorting
+refresh_file_list()
 
 # Bind selection event
 def on_file_select(event):
@@ -866,65 +790,15 @@ def on_file_select(event):
 
 file_listbox.bind('<<ListboxSelect>>', on_file_select)
 
-load_button = tk.Button(control_frame, text="Load Sample", command=load_sample)
+load_button = tk.Button(file_section, text="Load Sample", command=load_sample)
 load_button.pack(anchor="e")
 
-
-metadata_text = tk.Text(control_frame, height=10, width=40)
+metadata_text = tk.Text(file_section, height=8, width=40)
 metadata_text.pack(anchor="e")
 
-# Add metadata input section
-add_metadata_label = tk.Label(control_frame, text="Add New Metadata:")
-add_metadata_label.pack(anchor="e", pady=(10, 0))
+editor_button = tk.Button(file_section, text="Editor", command=launch_editor)
+editor_button.pack(anchor="e", pady=(10, 0))
 
-# Key-value input for new metadata
-metadata_key_frame = tk.Frame(control_frame)
-metadata_key_frame.pack(anchor="e", fill=tk.X, pady=2)
-tk.Label(metadata_key_frame, text="Key:").pack(side=tk.LEFT)
-metadata_key_entry = tk.Entry(metadata_key_frame, width=15)
-metadata_key_entry.pack(side=tk.LEFT, padx=(5, 0))
-
-metadata_value_frame = tk.Frame(control_frame)
-metadata_value_frame.pack(anchor="e", fill=tk.X, pady=2)
-tk.Label(metadata_value_frame, text="Value:").pack(side=tk.LEFT)
-metadata_value_entry = tk.Entry(metadata_value_frame, width=15)
-metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0))
-
-save_metadata_button = tk.Button(control_frame, text="Save Metadata to S3", command=lambda: save_metadata_to_s3())
-save_metadata_button.pack(anchor="e", pady=(5, 0))
-
-# Add update metadata section
-update_metadata_label = tk.Label(control_frame, text="Update Existing Metadata:")
-update_metadata_label.pack(anchor="e", pady=(10, 0))
-
-# Key-value input for updating metadata
-update_metadata_key_frame = tk.Frame(control_frame)
-update_metadata_key_frame.pack(anchor="e", fill=tk.X, pady=2)
-tk.Label(update_metadata_key_frame, text="Key:").pack(side=tk.LEFT)
-update_metadata_key_entry = tk.Entry(update_metadata_key_frame, width=15)
-update_metadata_key_entry.pack(side=tk.LEFT, padx=(5, 0))
-
-update_metadata_value_frame = tk.Frame(control_frame)
-update_metadata_value_frame.pack(anchor="e", fill=tk.X, pady=2)
-tk.Label(update_metadata_value_frame, text="New Value:").pack(side=tk.LEFT)
-update_metadata_value_entry = tk.Entry(update_metadata_value_frame, width=15)
-update_metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0))
-
-update_metadata_button = tk.Button(control_frame, text="Update Metadata", command=lambda: update_metadata_in_s3())
-update_metadata_button.pack(anchor="e", pady=(5, 0))
-
-# Add rename file section
-rename_label = tk.Label(control_frame, text="Rename File:")
-rename_label.pack(anchor="e", pady=(10, 0))
-
-rename_frame = tk.Frame(control_frame)
-rename_frame.pack(anchor="e", fill=tk.X, pady=2)
-tk.Label(rename_frame, text="New Name:").pack(side=tk.LEFT)
-rename_entry = tk.Entry(rename_frame, width=15)
-rename_entry.pack(side=tk.LEFT, padx=(5, 0))
-
-rename_button = tk.Button(control_frame, text="Rename File", command=lambda: rename_file_in_s3())
-rename_button.pack(anchor="e", pady=(5, 0))
 
 fig, ax1 = plt.subplots()
 ax2 = ax1.twinx()
