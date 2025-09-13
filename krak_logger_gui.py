@@ -14,6 +14,7 @@ import sounddevice as sd
 import os
 import io
 import subprocess
+from minio import Minio
 
 # Global variables
 recording = False
@@ -275,6 +276,18 @@ def upload_to_minio():
         s3_client.upload_file(OUTPUT_PARQUET_FILE, BUCKET_NAME, os.path.basename(OUTPUT_PARQUET_FILE))
         s3_client.upload_file(OUTPUT_WAV_FILE, BUCKET_NAME, os.path.basename(OUTPUT_WAV_FILE))
         print(f"Files uploaded to MinIO: {OUTPUT_PARQUET_FILE}, {OUTPUT_WAV_FILE}")
+
+        # Apply metadata as tags to parquet file
+        metadata = get_all_metadata()
+        if metadata:
+            # Apply tags to parquet file only
+            parquet_success = sync_metadata_to_tags(os.path.basename(OUTPUT_PARQUET_FILE), metadata)
+
+            if parquet_success:
+                print("Successfully applied tags to parquet file")
+            else:
+                print("Failed to apply tags to parquet file")
+
         messagebox.showinfo("Upload Complete", f"Files uploaded to MinIO")
 
         # Get the uploaded file base name (without extension)
@@ -419,6 +432,48 @@ def load_sample():
 
 
 
+
+def create_minio_client():
+    """Create and return MinIO client"""
+    dotenv.load_dotenv()
+    endpoint = os.getenv("MINIO_ENDPOINT")
+    # Remove http:// or https:// from endpoint for MinIO client
+    if endpoint.startswith("http://"):
+        endpoint = endpoint[7:]
+        secure = False
+    elif endpoint.startswith("https://"):
+        endpoint = endpoint[8:]
+        secure = True
+    else:
+        secure = False
+
+    return Minio(
+        endpoint,
+        access_key=os.getenv("MINIO_ACCESS_KEY"),
+        secret_key=os.getenv("MINIO_SECRET_KEY"),
+        secure=secure
+    )
+
+def sync_metadata_to_tags(object_name, metadata_dict):
+    """Sync metadata dictionary to MinIO object tags"""
+    try:
+        minio_client = create_minio_client()
+
+        # Convert metadata to tags format (MinIO tags are key-value pairs)
+        tags = {}
+        for key, value in metadata_dict.items():
+            # MinIO tag keys and values must be strings, and have length restrictions
+            tag_key = str(key).replace(' ', '_')[:128]  # Replace spaces and limit length
+            tag_value = str(value)[:256]  # Limit tag value length
+            tags[tag_key] = tag_value
+
+        # Apply tags to the object
+        minio_client.set_object_tags(BUCKET_NAME, object_name, tags)
+        print(f"Applied {len(tags)} tags to {object_name}")
+        return True
+    except Exception as e:
+        print(f"Failed to apply tags to {object_name}: {str(e)}")
+        return False
 
 def launch_editor():
     """Launch the krak_editor_gui.py application"""

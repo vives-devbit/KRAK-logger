@@ -10,6 +10,7 @@ import os
 import io
 from datetime import datetime as dt
 import re
+from minio import Minio
 
 BUCKET_NAME = "krak"
 loaded_df = None
@@ -24,6 +25,48 @@ def get_s3_client():
         aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
         aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
     )
+
+def create_minio_client():
+    """Create and return MinIO client"""
+    dotenv.load_dotenv()
+    endpoint = os.getenv("MINIO_ENDPOINT")
+    # Remove http:// or https:// from endpoint for MinIO client
+    if endpoint.startswith("http://"):
+        endpoint = endpoint[7:]
+        secure = False
+    elif endpoint.startswith("https://"):
+        endpoint = endpoint[8:]
+        secure = True
+    else:
+        secure = False
+
+    return Minio(
+        endpoint,
+        access_key=os.getenv("MINIO_ACCESS_KEY"),
+        secret_key=os.getenv("MINIO_SECRET_KEY"),
+        secure=secure
+    )
+
+def sync_metadata_to_tags(object_name, metadata_dict):
+    """Sync metadata dictionary to MinIO object tags"""
+    try:
+        minio_client = create_minio_client()
+
+        # Convert metadata to tags format (MinIO tags are key-value pairs)
+        tags = {}
+        for key, value in metadata_dict.items():
+            # MinIO tag keys and values must be strings, and have length restrictions
+            tag_key = str(key).replace(' ', '_')[:128]  # Replace spaces and limit length
+            tag_value = str(value)[:256]  # Limit tag value length
+            tags[tag_key] = tag_value
+
+        # Apply tags to the object
+        minio_client.set_object_tags(BUCKET_NAME, object_name, tags)
+        print(f"Applied {len(tags)} tags to {object_name}")
+        return True
+    except Exception as e:
+        print(f"Failed to apply tags to {object_name}: {str(e)}")
+        return False
 
 def list_s3_files():
     s3_client = get_s3_client()
