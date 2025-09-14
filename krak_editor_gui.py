@@ -151,7 +151,8 @@ def load_sample():
         loaded_df = df
         current_sample_name = base_name
 
-        status_var.set(f"Loaded: {base_name}")
+        current_file_var.set(f"Loaded: {base_name}")
+        status_var.set("Ready")
     except S3Error as e:
         messagebox.showerror("Load Error", f"MinIO Error: {e}")
     except Exception as e:
@@ -724,6 +725,12 @@ file_listbox.bind("<Double-Button-1>", lambda e: load_sample())  # Double-click 
 # Load button
 load_button = tk.Button(file_list_frame, text="Load Selected File", command=load_sample)
 load_button.pack(pady=5)
+
+# Current file status (under file list)
+current_file_var = tk.StringVar()
+current_file_var.set("No file loaded")
+current_file_label = tk.Label(file_list_frame, textvariable=current_file_var, font=('TkDefaultFont', 9), fg='blue')
+current_file_label.pack(pady=(5, 0))
 
 # Metadata display and editing section (right frame)
 metadata_frame = tk.LabelFrame(right_frame, text="Metadata", padx=10, pady=10)
