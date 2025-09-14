@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import tkinter as tk
 from tkinter import messagebox, ttk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
 import dotenv
 import datetime
@@ -137,6 +139,9 @@ def load_sample():
         minio_client = create_minio_client()
         response = minio_client.get_object(BUCKET_NAME, parquet_key)
         df = pd.read_parquet(io.BytesIO(response.read()))
+
+        # Update plot with loaded data
+        update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"]], title=base_name)
 
         metadata_text.delete("1.0", tk.END)
         for key, val in df.attrs.items():
@@ -586,11 +591,25 @@ def show_context_menu(event):
         file_listbox.selection_clear(0, tk.END)
         file_listbox.selection_set(index)
         file_listbox.activate(index)
-        
+
         # Show context menu
         context_menu.post(event.x_root, event.y_root)
     except:
         pass
+
+def update_plot(time_axis, data, title="Loaded Data"):
+    """Update the plot with new data"""
+    ax1.clear()
+    ax2.clear()
+    ax1.plot(time_axis, data[0], 'b-', label="AI0")
+    ax2.plot(time_axis, data[1], 'r-', label="AI1")
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("AI0 Voltage (V)", color="b")
+    ax2.set_ylabel("AI1 Voltage (V)", color="r")
+    ax1.tick_params(axis="y", labelcolor="b")
+    ax2.tick_params(axis="y", labelcolor="r")
+    ax1.set_title(title)
+    fig.canvas.draw()
 
 # Create the GUI
 root = tk.Tk()
@@ -599,7 +618,11 @@ root.geometry("1000x700")
 
 # Create main frames
 left_frame = tk.Frame(root)
-left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+
+# Center frame for plot
+center_frame = tk.Frame(root)
+center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=10)
 
 right_frame = tk.Frame(root)
 right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
@@ -759,6 +782,12 @@ progress_var = tk.StringVar()
 progress_var.set("")
 progress_label = tk.Label(status_frame, textvariable=progress_var, relief=tk.SUNKEN, anchor=tk.E)
 progress_label.pack(side=tk.RIGHT)
+
+# Add plot to center frame
+fig, ax1 = plt.subplots(figsize=(8, 6))
+ax2 = ax1.twinx()
+canvas = FigureCanvasTkAgg(fig, master=center_frame)
+canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
 # Initialize file list
 refresh_file_list()
