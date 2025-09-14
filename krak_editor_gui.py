@@ -154,6 +154,7 @@ def load_sample():
         current_sample_name = base_name
 
         current_file_var.set(f"Loaded: {base_name}")
+        playback_status_var.set(f"Ready to play: {base_name}.wav")
         status_var.set("Ready")
     except S3Error as e:
         messagebox.showerror("Load Error", f"MinIO Error: {e}")
@@ -663,6 +664,61 @@ def update_plot(time_axis, data, title="Loaded Data"):
     ax1.set_title(title)
     fig.canvas.draw()
 
+def play_wav_file():
+    """Play the WAV file corresponding to the loaded parquet file"""
+    try:
+        # Check if a parquet file is loaded
+        if loaded_df is None or not current_sample_name:
+            messagebox.showwarning("No File Loaded",
+                                 "Please load a parquet file first before trying to play audio.")
+            return
+
+        # Get the corresponding WAV file name
+        wav_filename = f"{current_sample_name}.wav"
+
+        # Download WAV file from MinIO to a temporary location
+        minio_client = create_minio_client()
+
+        # Check if WAV file exists in MinIO
+        try:
+            minio_client.stat_object(BUCKET_NAME, wav_filename)
+        except S3Error:
+            messagebox.showerror("WAV File Not Found",
+                                f"No WAV file found for '{current_sample_name}'.\n\n"
+                                f"Looking for: {wav_filename}")
+            return
+
+        # Download WAV file to temporary location
+        import tempfile
+        temp_wav_path = os.path.join(tempfile.gettempdir(), f"temp_{wav_filename}")
+
+        minio_client.fget_object(BUCKET_NAME, wav_filename, temp_wav_path)
+
+        # Load and play the WAV file
+        rate, data = wav.read(temp_wav_path)
+
+        # Play audio
+        sd.play(data, rate)
+
+        # Clean up temporary file
+        try:
+            os.remove(temp_wav_path)
+        except:
+            pass  # Ignore cleanup errors
+
+    except S3Error as e:
+        messagebox.showerror("MinIO Error", f"Failed to access WAV file: {e}")
+    except Exception as e:
+        messagebox.showerror("Playback Error", f"Failed to play audio: {str(e)}")
+
+def stop_audio():
+    """Stop audio playback"""
+    try:
+        sd.stop()
+        messagebox.showinfo("Audio Stopped", "Audio playback stopped.")
+    except Exception as e:
+        messagebox.showerror("Stop Error", f"Failed to stop audio: {str(e)}")
+
 # Create the GUI
 root = tk.Tk()
 root.title("KRAK Metadata Editor")
@@ -831,10 +887,26 @@ update_metadata_button.pack(pady=(2, 0))
 playback_frame = tk.LabelFrame(center_frame, text="Playback Controls", padx=10, pady=5)
 playback_frame.pack(fill=tk.X, pady=(0, 10))
 
-# Placeholder label for future playback functions
-playback_placeholder = tk.Label(playback_frame, text="Playback functions will be added here",
-                               font=('TkDefaultFont', 9), fg='gray')
-playback_placeholder.pack(pady=10)
+# Button frame for playback controls
+playback_button_frame = tk.Frame(playback_frame)
+playback_button_frame.pack(pady=10)
+
+# Play button
+play_button = tk.Button(playback_button_frame, text="Play WAV File",
+                       command=play_wav_file, bg='lightgreen', width=12)
+play_button.pack(side=tk.LEFT, padx=5)
+
+# Stop button
+stop_button = tk.Button(playback_button_frame, text="Stop Audio",
+                       command=stop_audio, bg='lightcoral', width=12)
+stop_button.pack(side=tk.LEFT, padx=5)
+
+# Status label for playback
+playback_status_var = tk.StringVar()
+playback_status_var.set("Load a file to enable playback")
+playback_status_label = tk.Label(playback_frame, textvariable=playback_status_var,
+                                font=('TkDefaultFont', 9), fg='gray')
+playback_status_label.pack(pady=(0, 5))
 
 # Keep status_var and progress_var for compatibility but don't display them
 status_var = tk.StringVar()
