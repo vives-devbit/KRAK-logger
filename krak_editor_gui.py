@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, simpledialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
 import sounddevice as sd
@@ -694,29 +694,51 @@ def update_playback_line():
         current_time = time.time()
         elapsed_time = current_time - playback_start_time
 
-        # Adaptive delay compensation based on audio complexity
-        # Start with base delay and adjust based on system performance
-        base_delay = 0.05  # 50ms base delay
+        # Use learned delay if available, otherwise use adaptive delay
+        if current_file_delay is not None:
+            # Use the learned delay for this specific file
+            adaptive_delay = current_file_delay
+        else:
+            # Adaptive delay compensation based on audio complexity
+            base_delay = 0.05  # 50ms base delay
+
+            # Adaptive delay based on audio duration (longer files often have more delay)
+            if audio_duration:
+                if audio_duration > 10:  # Long files (>10s)
+                    adaptive_delay = base_delay + 0.05  # +50ms
+                elif audio_duration > 5:  # Medium files (5-10s)
+                    adaptive_delay = base_delay + 0.03  # +30ms
+                else:  # Short files (<5s)
+                    adaptive_delay = base_delay + 0.01  # +10ms
+            else:
+                adaptive_delay = base_delay
 
         # Check if audio is still playing (sounddevice status)
+        audio_finished = False
         try:
             if not sd.get_stream().active:
-                # Audio finished, stop tracking
-                stop_playback_line()
-                return
+                audio_finished = True
         except:
-            pass  # Continue if we can't check stream status
+            # If we can't check stream status, check if we've exceeded duration
+            if audio_duration and elapsed_time > (audio_duration + 1.0):
+                audio_finished = True
 
-        # Adaptive delay based on audio duration (longer files often have more delay)
-        if audio_duration:
-            if audio_duration > 10:  # Long files (>10s)
-                adaptive_delay = base_delay + 0.05  # +50ms
-            elif audio_duration > 5:  # Medium files (5-10s)
-                adaptive_delay = base_delay + 0.03  # +30ms
-            else:  # Short files (<5s)
-                adaptive_delay = base_delay + 0.01  # +10ms
-        else:
-            adaptive_delay = base_delay
+        if audio_finished:
+            # Learn the delay if this is a learning session
+            if delay_learning_active and audio_duration and current_sample_name:
+                # Calculate what the delay should have been based on where the line was
+                # when audio actually finished
+                learned_delay = elapsed_time - audio_duration
+                if 0.0 <= learned_delay <= 1.0:  # Reasonable delay range
+                    learned_delays[current_sample_name] = learned_delay
+                    print(f"Learned delay of {learned_delay:.3f}s for {current_sample_name}")
+                    # Save learned delays to file
+                    save_learned_delays()
+                else:
+                    print(f"Unreasonable delay {learned_delay:.3f}s detected, not saving")
+
+            stop_playback_line()
+            return
 
         playback_position = elapsed_time - adaptive_delay
 
@@ -782,6 +804,33 @@ def stop_playback_line():
         except:
             pass
         playback_line = None
+
+def save_learned_delays():
+    """Save learned delays to a file for persistence"""
+    try:
+        import json
+        delay_file = "audio_delays.json"
+        with open(delay_file, 'w') as f:
+            json.dump(learned_delays, f, indent=2)
+        print(f"Saved {len(learned_delays)} learned delays to {delay_file}")
+    except Exception as e:
+        print(f"Failed to save learned delays: {e}")
+
+def load_learned_delays():
+    """Load previously learned delays from file"""
+    global learned_delays
+    try:
+        import json
+        delay_file = "audio_delays.json"
+        if os.path.exists(delay_file):
+            with open(delay_file, 'r') as f:
+                learned_delays = json.load(f)
+            print(f"Loaded {len(learned_delays)} learned delays from {delay_file}")
+        else:
+            learned_delays = {}
+    except Exception as e:
+        print(f"Failed to load learned delays: {e}")
+        learned_delays = {}
 
 def play_wav_file():
     """Play the WAV file corresponding to the loaded parquet file"""
@@ -866,6 +915,9 @@ def stop_audio():
         messagebox.showinfo("Audio Stopped", "Audio playback stopped.")
     except Exception as e:
         messagebox.showerror("Stop Error", f"Failed to stop audio: {str(e)}")
+
+# Load previously learned delays
+load_learned_delays()
 
 # Create the GUI
 root = tk.Tk()
@@ -1048,6 +1100,38 @@ play_button.pack(side=tk.LEFT, padx=5)
 stop_button = tk.Button(playback_button_frame, text="Stop Audio",
                        command=stop_audio, bg='lightcoral', width=12)
 stop_button.pack(side=tk.LEFT, padx=5)
+
+# Manual delay calibration button
+def calibrate_delay():
+    """Manual delay calibration dialog"""
+    if not current_sample_name:
+        messagebox.showwarning("No File", "Please load a file first.")
+        return
+
+    current_delay = learned_delays.get(current_sample_name, 0.0)
+    delay_str = tk.simpledialog.askstring(
+        "Audio Delay Calibration",
+        f"Current delay for '{current_sample_name}': {current_delay:.3f}s\n\n"
+        "Enter new delay in seconds (0.0 to 1.0):",
+        initialvalue=f"{current_delay:.3f}"
+    )
+
+    if delay_str is not None:
+        try:
+            new_delay = float(delay_str)
+            if 0.0 <= new_delay <= 1.0:
+                learned_delays[current_sample_name] = new_delay
+                save_learned_delays()
+                messagebox.showinfo("Calibration",
+                                  f"Delay set to {new_delay:.3f}s for '{current_sample_name}'")
+            else:
+                messagebox.showerror("Invalid Delay", "Delay must be between 0.0 and 1.0 seconds")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid number")
+
+calibrate_button = tk.Button(playback_button_frame, text="Calibrate Delay",
+                           command=calibrate_delay, bg='lightyellow', width=12)
+calibrate_button.pack(side=tk.LEFT, padx=5)
 
 # Status label for playback
 playback_status_var = tk.StringVar()
