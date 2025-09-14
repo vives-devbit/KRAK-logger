@@ -3,7 +3,6 @@ import pandas as pd
 import tkinter as tk
 from tkinter import messagebox, ttk
 import threading
-import boto3
 import dotenv
 import datetime
 import os
@@ -11,40 +10,35 @@ import io
 from datetime import datetime as dt
 import re
 from minio import Minio
+from minio.error import S3Error
+from minio.commonconfig import CopySource
 
 BUCKET_NAME = "krak"
 loaded_df = None
 current_sample_name = None
 metadata_cache = {}
 
-def get_s3_client():
-    dotenv.load_dotenv()
-    return boto3.client(
-        "s3",
-        endpoint_url=os.getenv("MINIO_ENDPOINT"),
-        aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-        aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
-    )
 
 def create_minio_client():
     """Create and return MinIO client"""
     dotenv.load_dotenv()
     endpoint = os.getenv("MINIO_ENDPOINT")
-    # Remove http:// or https:// from endpoint for MinIO client
-    if endpoint.startswith("http://"):
-        endpoint = endpoint[7:]
-        secure = False
-    elif endpoint.startswith("https://"):
+
+    # Parse endpoint URL properly
+    secure = False
+    if endpoint.startswith("https://"):
         endpoint = endpoint[8:]
         secure = True
-    else:
+    elif endpoint.startswith("http://"):
+        endpoint = endpoint[7:]
         secure = False
 
     return Minio(
         endpoint,
         access_key=os.getenv("MINIO_ACCESS_KEY"),
         secret_key=os.getenv("MINIO_SECRET_KEY"),
-        secure=secure
+        secure=secure,
+        region=os.getenv("MINIO_REGION", "us-east-1")  # Default region
     )
 
 def sync_metadata_to_tags(object_name, metadata_dict):
@@ -64,46 +58,58 @@ def sync_metadata_to_tags(object_name, metadata_dict):
         minio_client.set_object_tags(BUCKET_NAME, object_name, tags)
         print(f"Applied {len(tags)} tags to {object_name}")
         return True
+    except S3Error as e:
+        print(f"MinIO Error applying tags to {object_name}: {e}")
+        return False
     except Exception as e:
         print(f"Failed to apply tags to {object_name}: {str(e)}")
         return False
 
 def list_s3_files():
-    s3_client = get_s3_client()
-    response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
-    names = set()
-    if 'Contents' in response:
-        for obj in response['Contents']:
-            if obj['Key'].endswith('.parquet'):
-                base = os.path.splitext(os.path.basename(obj['Key']))[0]
+    try:
+        minio_client = create_minio_client()
+        objects = minio_client.list_objects(BUCKET_NAME)
+        names = set()
+
+        for obj in objects:
+            if obj.object_name.endswith('.parquet'):
+                base = os.path.splitext(os.path.basename(obj.object_name))[0]
                 names.add(base)
-    return sorted(names)
+        return sorted(names)
+    except S3Error as e:
+        print(f"MinIO Error listing files: {e}")
+        return []
+    except Exception as e:
+        print(f"Error listing files: {e}")
+        return []
 
 def load_metadata_cache():
     global metadata_cache
     try:
-        s3_client = get_s3_client()
-        response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
-        
-        if 'Contents' in response:
-            parquet_files = [obj['Key'] for obj in response['Contents'] if obj['Key'].endswith('.parquet')]
-            
-            for i, parquet_key in enumerate(parquet_files):
-                try:
-                    # Update progress
-                    progress_var.set(f"Loading metadata... {i+1}/{len(parquet_files)}")
-                    root.update_idletasks()
-                    
-                    response = s3_client.get_object(Bucket=BUCKET_NAME, Key=parquet_key)
-                    df = pd.read_parquet(io.BytesIO(response['Body'].read()))
-                    base_name = os.path.splitext(os.path.basename(parquet_key))[0]
-                    metadata_cache[base_name] = dict(df.attrs)
-                except Exception as e:
-                    print(f"Error loading metadata for {parquet_key}: {e}")
-                    continue
-        
+        minio_client = create_minio_client()
+        objects = minio_client.list_objects(BUCKET_NAME)
+
+        parquet_files = [obj.object_name for obj in objects if obj.object_name.endswith('.parquet')]
+
+        for i, parquet_key in enumerate(parquet_files):
+            try:
+                # Update progress
+                progress_var.set(f"Loading metadata... {i+1}/{len(parquet_files)}")
+                root.update_idletasks()
+
+                response = minio_client.get_object(BUCKET_NAME, parquet_key)
+                df = pd.read_parquet(io.BytesIO(response.read()))
+                base_name = os.path.splitext(os.path.basename(parquet_key))[0]
+                metadata_cache[base_name] = dict(df.attrs)
+            except Exception as e:
+                print(f"Error loading metadata for {parquet_key}: {e}")
+                continue
+
         progress_var.set(f"Loaded metadata for {len(metadata_cache)} files")
         return True
+    except S3Error as e:
+        messagebox.showerror("Cache Error", f"MinIO Error loading metadata cache: {e}")
+        return False
     except Exception as e:
         messagebox.showerror("Cache Error", f"Failed to load metadata cache: {e}")
         return False
@@ -124,23 +130,25 @@ def load_sample():
         if not selection:
             messagebox.showwarning("No Selection", "Please select a file from the list.")
             return
-            
+
         base_name = file_listbox.get(selection[0])
         parquet_key = f"{base_name}.parquet"
-        
-        s3_client = get_s3_client()
-        response = s3_client.get_object(Bucket=BUCKET_NAME, Key=parquet_key)
-        df = pd.read_parquet(io.BytesIO(response['Body'].read()))
-        
+
+        minio_client = create_minio_client()
+        response = minio_client.get_object(BUCKET_NAME, parquet_key)
+        df = pd.read_parquet(io.BytesIO(response.read()))
+
         metadata_text.delete("1.0", tk.END)
         for key, val in df.attrs.items():
             metadata_text.insert(tk.END, f"{key}: {val}\n")
-        
+
         global loaded_df, current_sample_name
         loaded_df = df
         current_sample_name = base_name
-        
+
         status_var.set(f"Loaded: {base_name}")
+    except S3Error as e:
+        messagebox.showerror("Load Error", f"MinIO Error: {e}")
     except Exception as e:
         messagebox.showerror("Load Error", str(e))
 
@@ -281,16 +289,16 @@ def save_metadata_to_s3():
             updated_df = original_df.copy()
             updated_df.attrs[metadata_key] = metadata_value
             
-            s3_client = get_s3_client()
+            minio_client = create_minio_client()
             
             original_key = f"{sample_name}.parquet"
             backup_key = f"{sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
             old_key = f"{sample_name}_old_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
             
             try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            except Exception:
-                raise Exception(f"Original file {original_key} not found in S3")
+                minio_client.stat_object(BUCKET_NAME, original_key)
+            except S3Error:
+                raise Exception(f"Original file {original_key} not found in MinIO")
             
             root.after(0, lambda: save_metadata_button.config(text="Creating backup..."))
             parquet_buffer = io.BytesIO()
@@ -298,46 +306,52 @@ def save_metadata_to_s3():
             buffer_size = parquet_buffer.tell()
             parquet_buffer.seek(0)
             
-            s3_client.upload_fileobj(parquet_buffer, BUCKET_NAME, backup_key)
+            minio_client.put_object(BUCKET_NAME, backup_key, parquet_buffer, buffer_size)
             
-            backup_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_key)
-            if backup_obj['ContentLength'] != buffer_size:
+            backup_obj = minio_client.stat_object(BUCKET_NAME, backup_key)
+            if backup_obj.size != buffer_size:
                 raise Exception("Backup file upload verification failed - size mismatch")
             
             root.after(0, lambda: save_metadata_button.config(text="Backing up original..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': original_key},
-                Key=old_key
+            minio_client.copy_object(
+                BUCKET_NAME, old_key,
+                CopySource(BUCKET_NAME, original_key)
             )
             
-            s3_client.head_object(Bucket=BUCKET_NAME, Key=old_key)
+            minio_client.stat_object(BUCKET_NAME, old_key)
             
             root.after(0, lambda: save_metadata_button.config(text="Finalizing save..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': backup_key},
-                Key=original_key
+            minio_client.copy_object(
+                BUCKET_NAME, original_key,
+                CopySource(BUCKET_NAME, backup_key)
             )
             
-            final_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            if final_obj['ContentLength'] != buffer_size:
+            final_obj = minio_client.stat_object(BUCKET_NAME, original_key)
+            if final_obj.size != buffer_size:
                 try:
-                    s3_client.copy_object(
-                        Bucket=BUCKET_NAME,
-                        CopySource={'Bucket': BUCKET_NAME, 'Key': old_key},
-                        Key=original_key
+                    minio_client.copy_object(
+                        BUCKET_NAME, original_key,
+                        CopySource(BUCKET_NAME, old_key)
                     )
                     raise Exception("Final file verification failed - rolled back to original")
                 except Exception as rollback_error:
                     raise Exception(f"Final file verification failed and rollback failed: {rollback_error}")
             
             try:
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
+                minio_client.remove_object(BUCKET_NAME, backup_key)
+                minio_client.remove_object(BUCKET_NAME, old_key)
             except Exception as cleanup_error:
                 print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
-            
+
+            # Sync metadata to MinIO tags
+            try:
+                if sync_metadata_to_tags(original_key, dict(updated_df.attrs)):
+                    print(f"Successfully synced metadata tags for {original_key}")
+                else:
+                    print(f"Failed to sync metadata tags for {original_key}")
+            except Exception as tag_error:
+                print(f"Warning: Tag sync failed but metadata was saved successfully: {tag_error}")
+
             def success_update():
                 global loaded_df
                 loaded_df = updated_df
@@ -348,12 +362,12 @@ def save_metadata_to_s3():
                 metadata_key_entry.delete(0, tk.END)
                 metadata_value_entry.delete(0, tk.END)
                 
-                save_metadata_button.config(text="Save Metadata to S3", state="normal")
+                save_metadata_button.config(text="Save Metadata to MinIO", state="normal")
                 
                 # Update cache
                 metadata_cache[sample_name] = dict(updated_df.attrs)
                 
-                messagebox.showinfo("Success", f"Metadata '{metadata_key}' added and saved to S3 safely.")
+                messagebox.showinfo("Success", f"Metadata '{metadata_key}' added and saved to MinIO safely.")
             
             root.after(0, success_update)
             
@@ -362,18 +376,18 @@ def save_metadata_to_s3():
             
             if backup_key:
                 try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
+                    minio_client.remove_object(BUCKET_NAME, backup_key)
                 except:
                     pass
             
             if old_key:
                 try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
+                    minio_client.remove_object(BUCKET_NAME, old_key)
                 except:
                     pass
             
             def error_update():
-                save_metadata_button.config(text="Save Metadata to S3", state="normal")
+                save_metadata_button.config(text="Save Metadata to MinIO", state="normal")
                 messagebox.showerror("Save Error", f"Failed to save metadata safely: {error_msg}")
             
             root.after(0, error_update)
@@ -422,16 +436,16 @@ def update_metadata_in_s3():
             updated_df = original_df.copy()
             updated_df.attrs[metadata_key] = metadata_value
             
-            s3_client = get_s3_client()
+            minio_client = create_minio_client()
             
             original_key = f"{sample_name}.parquet"
             backup_key = f"{sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
             old_key = f"{sample_name}_old_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
             
             try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            except Exception:
-                raise Exception(f"Original file {original_key} not found in S3")
+                minio_client.stat_object(BUCKET_NAME, original_key)
+            except S3Error:
+                raise Exception(f"Original file {original_key} not found in MinIO")
             
             root.after(0, lambda: update_metadata_button.config(text="Creating backup..."))
             parquet_buffer = io.BytesIO()
@@ -439,46 +453,52 @@ def update_metadata_in_s3():
             buffer_size = parquet_buffer.tell()
             parquet_buffer.seek(0)
             
-            s3_client.upload_fileobj(parquet_buffer, BUCKET_NAME, backup_key)
+            minio_client.put_object(BUCKET_NAME, backup_key, parquet_buffer, buffer_size)
             
-            backup_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_key)
-            if backup_obj['ContentLength'] != buffer_size:
+            backup_obj = minio_client.stat_object(BUCKET_NAME, backup_key)
+            if backup_obj.size != buffer_size:
                 raise Exception("Backup file upload verification failed - size mismatch")
             
             root.after(0, lambda: update_metadata_button.config(text="Backing up original..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': original_key},
-                Key=old_key
+            minio_client.copy_object(
+                BUCKET_NAME, old_key,
+                CopySource(BUCKET_NAME, original_key)
             )
             
-            s3_client.head_object(Bucket=BUCKET_NAME, Key=old_key)
+            minio_client.stat_object(BUCKET_NAME, old_key)
             
             root.after(0, lambda: update_metadata_button.config(text="Finalizing update..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': backup_key},
-                Key=original_key
+            minio_client.copy_object(
+                BUCKET_NAME, original_key,
+                CopySource(BUCKET_NAME, backup_key)
             )
             
-            final_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=original_key)
-            if final_obj['ContentLength'] != buffer_size:
+            final_obj = minio_client.stat_object(BUCKET_NAME, original_key)
+            if final_obj.size != buffer_size:
                 try:
-                    s3_client.copy_object(
-                        Bucket=BUCKET_NAME,
-                        CopySource={'Bucket': BUCKET_NAME, 'Key': old_key},
-                        Key=original_key
+                    minio_client.copy_object(
+                        BUCKET_NAME, original_key,
+                        CopySource(BUCKET_NAME, old_key)
                     )
                     raise Exception("Final file verification failed - rolled back to original")
                 except Exception as rollback_error:
                     raise Exception(f"Final file verification failed and rollback failed: {rollback_error}")
             
             try:
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
+                minio_client.remove_object(BUCKET_NAME, backup_key)
+                minio_client.remove_object(BUCKET_NAME, old_key)
             except Exception as cleanup_error:
                 print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
-            
+
+            # Sync metadata to MinIO tags
+            try:
+                if sync_metadata_to_tags(original_key, dict(updated_df.attrs)):
+                    print(f"Successfully synced metadata tags for {original_key}")
+                else:
+                    print(f"Failed to sync metadata tags for {original_key}")
+            except Exception as tag_error:
+                print(f"Warning: Tag sync failed but metadata was saved successfully: {tag_error}")
+
             def success_update():
                 global loaded_df
                 loaded_df = updated_df
@@ -494,7 +514,7 @@ def update_metadata_in_s3():
                 # Update cache
                 metadata_cache[sample_name] = dict(updated_df.attrs)
                 
-                messagebox.showinfo("Success", f"Metadata '{metadata_key}' updated from '{old_value}' to '{metadata_value}' and saved to S3.")
+                messagebox.showinfo("Success", f"Metadata '{metadata_key}' updated from '{old_value}' to '{metadata_value}' and saved to MinIO.")
             
             root.after(0, success_update)
             
@@ -503,13 +523,13 @@ def update_metadata_in_s3():
             
             if backup_key:
                 try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_key)
+                    minio_client.remove_object(BUCKET_NAME, backup_key)
                 except:
                     pass
             
             if old_key:
                 try:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_key)
+                    minio_client.remove_object(BUCKET_NAME, old_key)
                 except:
                     pass
             
@@ -705,7 +725,7 @@ tk.Label(metadata_value_frame, text="Value:").pack(side=tk.LEFT)
 metadata_value_entry = tk.Entry(metadata_value_frame, width=20)
 metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
 
-save_metadata_button = tk.Button(metadata_frame, text="Save Metadata to S3", command=save_metadata_to_s3)
+save_metadata_button = tk.Button(metadata_frame, text="Save Metadata to MinIO", command=save_metadata_to_s3)
 save_metadata_button.pack(pady=(5, 0))
 
 # Update metadata section

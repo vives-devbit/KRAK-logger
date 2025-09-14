@@ -7,7 +7,6 @@ import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
-import boto3
 import dotenv
 import datetime
 import sounddevice as sd
@@ -15,6 +14,7 @@ import os
 import io
 import subprocess
 from minio import Minio
+from minio.error import S3Error
 
 # Global variables
 recording = False
@@ -264,17 +264,22 @@ def upload_to_minio():
         messagebox.showwarning("Files Not Found", "Saving the files locally.")
         save_to_parquet()
     try:
-        dotenv.load_dotenv()
+        minio_client = create_minio_client()
 
-        s3_client = boto3.client(
-            "s3",
-            endpoint_url=os.getenv("MINIO_ENDPOINT"),
-            aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
+        # Upload parquet file
+        minio_client.fput_object(
+            BUCKET_NAME,
+            os.path.basename(OUTPUT_PARQUET_FILE),
+            OUTPUT_PARQUET_FILE
         )
 
-        s3_client.upload_file(OUTPUT_PARQUET_FILE, BUCKET_NAME, os.path.basename(OUTPUT_PARQUET_FILE))
-        s3_client.upload_file(OUTPUT_WAV_FILE, BUCKET_NAME, os.path.basename(OUTPUT_WAV_FILE))
+        # Upload wav file
+        minio_client.fput_object(
+            BUCKET_NAME,
+            os.path.basename(OUTPUT_WAV_FILE),
+            OUTPUT_WAV_FILE
+        )
+
         print(f"Files uploaded to MinIO: {OUTPUT_PARQUET_FILE}, {OUTPUT_WAV_FILE}")
 
         # Apply metadata as tags to parquet file
@@ -299,6 +304,8 @@ def upload_to_minio():
         # Auto-select the uploaded file
         select_uploaded_file(uploaded_file_base)
 
+    except S3Error as e:
+        messagebox.showerror("Upload Failed", f"MinIO Error: {e}")
     except Exception as e:
         messagebox.showerror("Upload Failed", f"Error: {str(e)}")
 
@@ -333,46 +340,45 @@ def update_plot(time_axis, data, title="Recorded Data"):
 
 
 def list_s3_files(sort_by="name", sort_order="asc"):
-    """List S3 files with sorting options
+    """List MinIO files with sorting options
 
     Args:
         sort_by: "name" or "time"
         sort_order: "asc" (1-9) or "desc" (9-1)
     """
-    dotenv.load_dotenv()
-    s3_client = boto3.client(
-        "s3",
-        endpoint_url=os.getenv("MINIO_ENDPOINT"),
-        aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-        aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
-    )
-    response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
+    try:
+        minio_client = create_minio_client()
+        objects = minio_client.list_objects(BUCKET_NAME)
 
-    if 'Contents' not in response:
+        # Create a dictionary to store file info
+        files_info = {}
+        for obj in objects:
+            if obj.object_name.endswith('.parquet'):  # Only process parquet files
+                base_name = os.path.splitext(os.path.basename(obj.object_name))[0]
+                if base_name not in files_info:
+                    files_info[base_name] = {
+                        'name': base_name,
+                        'last_modified': obj.last_modified
+                    }
+
+        # Sort based on criteria
+        if sort_by == "time":
+            sorted_files = sorted(files_info.values(),
+                                key=lambda x: x['last_modified'],
+                                reverse=(sort_order == "desc"))
+        else:  # sort by name
+            sorted_files = sorted(files_info.values(),
+                                key=lambda x: x['name'],
+                                reverse=(sort_order == "desc"))
+
+        return [file_info['name'] for file_info in sorted_files]
+
+    except S3Error as e:
+        print(f"MinIO Error listing files: {e}")
         return []
-
-    # Create a dictionary to store file info
-    files_info = {}
-    for obj in response['Contents']:
-        if obj['Key'].endswith('.parquet'):  # Only process parquet files
-            base_name = os.path.splitext(os.path.basename(obj['Key']))[0]
-            if base_name not in files_info:
-                files_info[base_name] = {
-                    'name': base_name,
-                    'last_modified': obj['LastModified']
-                }
-
-    # Sort based on criteria
-    if sort_by == "time":
-        sorted_files = sorted(files_info.values(),
-                            key=lambda x: x['last_modified'],
-                            reverse=(sort_order == "desc"))
-    else:  # sort by name
-        sorted_files = sorted(files_info.values(),
-                            key=lambda x: x['name'],
-                            reverse=(sort_order == "desc"))
-
-    return [file_info['name'] for file_info in sorted_files]
+    except Exception as e:
+        print(f"Error listing files: {e}")
+        return []
 
 
 def refresh_file_list():
@@ -407,24 +413,23 @@ def load_sample():
     try:
         base_name = dropdown_var.get()
         parquet_key = f"{base_name}.parquet"
-        dotenv.load_dotenv()
-        s3_client = boto3.client(
-            "s3",
-            endpoint_url=os.getenv("MINIO_ENDPOINT"),
-            aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
-        )
-        response = s3_client.get_object(Bucket=BUCKET_NAME, Key=parquet_key)
-        df = pd.read_parquet(io.BytesIO(response['Body'].read()))
+        minio_client = create_minio_client()
+
+        # Get object from MinIO
+        response = minio_client.get_object(BUCKET_NAME, parquet_key)
+        df = pd.read_parquet(io.BytesIO(response.read()))
+
         update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"]], title=base_name)
         metadata_text.delete("1.0", tk.END)
         for key, val in df.attrs.items():
             metadata_text.insert(tk.END, f"{key}: {val}\n")
-        
+
         # Store the loaded dataframe globally for metadata updates
         global loaded_df, current_sample_name
         loaded_df = df
         current_sample_name = base_name
+    except S3Error as e:
+        messagebox.showerror("Load Error", f"MinIO Error: {e}")
     except Exception as e:
         messagebox.showerror("Load Error", str(e))
 
@@ -437,21 +442,23 @@ def create_minio_client():
     """Create and return MinIO client"""
     dotenv.load_dotenv()
     endpoint = os.getenv("MINIO_ENDPOINT")
-    # Remove http:// or https:// from endpoint for MinIO client
-    if endpoint.startswith("http://"):
-        endpoint = endpoint[7:]
-        secure = False
-    elif endpoint.startswith("https://"):
+
+    # Parse endpoint URL properly
+    secure = False
+    if endpoint.startswith("https://"):
         endpoint = endpoint[8:]
         secure = True
-    else:
+    elif endpoint.startswith("http://"):
+        endpoint = endpoint[7:]
         secure = False
+
 
     return Minio(
         endpoint,
         access_key=os.getenv("MINIO_ACCESS_KEY"),
         secret_key=os.getenv("MINIO_SECRET_KEY"),
-        secure=secure
+        secure=secure,
+        region=os.getenv("MINIO_REGION", "us-east-1")  # Default region
     )
 
 def sync_metadata_to_tags(object_name, metadata_dict):
@@ -471,6 +478,9 @@ def sync_metadata_to_tags(object_name, metadata_dict):
         minio_client.set_object_tags(BUCKET_NAME, object_name, tags)
         print(f"Applied {len(tags)} tags to {object_name}")
         return True
+    except S3Error as e:
+        print(f"MinIO Error applying tags to {object_name}: {e}")
+        return False
     except Exception as e:
         print(f"Failed to apply tags to {object_name}: {str(e)}")
         return False
@@ -482,229 +492,6 @@ def launch_editor():
     except Exception as e:
         messagebox.showerror("Launch Error", f"Failed to launch editor: {str(e)}")
 
-def rename_file_in_s3():
-    global loaded_df, current_sample_name
-    
-    # Input validation on main thread
-    if loaded_df is None:
-        messagebox.showwarning("No Sample Loaded", "Please load a sample first before renaming.")
-        return
-        
-    new_name = rename_entry.get().strip()
-    
-    if not new_name:
-        messagebox.showwarning("Invalid Input", "Please enter a new filename.")
-        return
-    
-    # Remove file extension if provided
-    if new_name.endswith('.parquet'):
-        new_name = new_name[:-8]
-    if new_name.endswith('.wav'):
-        new_name = new_name[:-4]
-        
-    if new_name == current_sample_name:
-        messagebox.showwarning("Invalid Input", "New filename must be different from current filename.")
-        return
-    
-    # Capture values to prevent race conditions
-    old_sample_name = current_sample_name
-    new_sample_name = new_name
-    original_df = loaded_df.copy()
-    
-    def rename_worker():
-        backup_parquet_key = None
-        backup_wav_key = None
-        temp_parquet_key = None
-        temp_wav_key = None
-        
-        try:
-            # Update button to show progress
-            root.after(0, lambda: rename_button.config(text="Renaming files...", state="disabled"))
-            
-            # Create updated dataframe with old filename in metadata
-            updated_df = original_df.copy()
-            updated_df.attrs['old_filename'] = old_sample_name
-            
-            # Prepare S3 client
-            dotenv.load_dotenv()
-            s3_client = boto3.client(
-                "s3",
-                endpoint_url=os.getenv("MINIO_ENDPOINT"),
-                aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-                aws_secret_access_key=os.getenv("MINIO_SECRET_KEY")
-            )
-            
-            # Define file names
-            old_parquet_key = f"{old_sample_name}.parquet"
-            old_wav_key = f"{old_sample_name}.wav"
-            new_parquet_key = f"{new_sample_name}.parquet"
-            new_wav_key = f"{new_sample_name}.wav"
-            
-            backup_parquet_key = f"{old_sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            backup_wav_key = f"{old_sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
-            temp_parquet_key = f"{new_sample_name}_temp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            temp_wav_key = f"{new_sample_name}_temp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
-            
-            # Step 1: Verify original files exist
-            try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=old_parquet_key)
-                parquet_exists = True
-            except Exception:
-                raise Exception(f"Original parquet file {old_parquet_key} not found in S3")
-            
-            try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=old_wav_key)
-                wav_exists = True
-            except Exception:
-                wav_exists = False
-                print(f"Warning: WAV file {old_wav_key} not found, will only rename parquet file")
-            
-            # Step 2: Check if target files already exist
-            try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=new_parquet_key)
-                raise Exception(f"Target file {new_parquet_key} already exists")
-            except s3_client.exceptions.NoSuchKey:
-                pass  # Good, target doesn't exist
-            
-            if wav_exists:
-                try:
-                    s3_client.head_object(Bucket=BUCKET_NAME, Key=new_wav_key)
-                    raise Exception(f"Target file {new_wav_key} already exists")
-                except s3_client.exceptions.NoSuchKey:
-                    pass  # Good, target doesn't exist
-            
-            # Step 3: Create updated parquet file with old_filename metadata and upload to temp location
-            root.after(0, lambda: rename_button.config(text="Creating updated parquet..."))
-            parquet_buffer = io.BytesIO()
-            updated_df.to_parquet(parquet_buffer, index=False)
-            buffer_size = parquet_buffer.tell()
-            parquet_buffer.seek(0)
-            
-            s3_client.upload_fileobj(parquet_buffer, BUCKET_NAME, temp_parquet_key)
-            
-            # Verify temp parquet upload
-            temp_parquet_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=temp_parquet_key)
-            if temp_parquet_obj['ContentLength'] != buffer_size:
-                raise Exception("Temporary parquet file upload verification failed - size mismatch")
-            
-            # Step 4: Copy WAV file to temp location if it exists
-            if wav_exists:
-                root.after(0, lambda: rename_button.config(text="Copying WAV file..."))
-                s3_client.copy_object(
-                    Bucket=BUCKET_NAME,
-                    CopySource={'Bucket': BUCKET_NAME, 'Key': old_wav_key},
-                    Key=temp_wav_key
-                )
-                
-                # Verify temp wav copy
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=temp_wav_key)
-            
-            # Step 5: Create backups of original files
-            root.after(0, lambda: rename_button.config(text="Creating backups..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': old_parquet_key},
-                Key=backup_parquet_key
-            )
-            
-            if wav_exists:
-                s3_client.copy_object(
-                    Bucket=BUCKET_NAME,
-                    CopySource={'Bucket': BUCKET_NAME, 'Key': old_wav_key},
-                    Key=backup_wav_key
-                )
-            
-            # Verify backups
-            s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_parquet_key)
-            if wav_exists:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=backup_wav_key)
-            
-            # Step 6: Move temp files to final locations
-            root.after(0, lambda: rename_button.config(text="Finalizing rename..."))
-            s3_client.copy_object(
-                Bucket=BUCKET_NAME,
-                CopySource={'Bucket': BUCKET_NAME, 'Key': temp_parquet_key},
-                Key=new_parquet_key
-            )
-            
-            if wav_exists:
-                s3_client.copy_object(
-                    Bucket=BUCKET_NAME,
-                    CopySource={'Bucket': BUCKET_NAME, 'Key': temp_wav_key},
-                    Key=new_wav_key
-                )
-            
-            # Verify final files
-            final_parquet_obj = s3_client.head_object(Bucket=BUCKET_NAME, Key=new_parquet_key)
-            if final_parquet_obj['ContentLength'] != buffer_size:
-                raise Exception("Final parquet file verification failed - size mismatch")
-            
-            if wav_exists:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=new_wav_key)
-            
-            # Step 7: Delete original files only after successful verification
-            root.after(0, lambda: rename_button.config(text="Cleaning up..."))
-            s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_parquet_key)
-            if wav_exists:
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=old_wav_key)
-            
-            # Step 8: Clean up temporary and backup files
-            try:
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=temp_parquet_key)
-                if wav_exists:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=temp_wav_key)
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_parquet_key)
-                if wav_exists:
-                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=backup_wav_key)
-            except Exception as cleanup_error:
-                print(f"Warning: Cleanup failed but rename was successful: {cleanup_error}")
-            
-            # Success - update UI on main thread
-            def success_update():
-                global loaded_df, current_sample_name
-                loaded_df = updated_df
-                current_sample_name = new_sample_name
-                
-                # Update metadata display
-                metadata_text.delete("1.0", tk.END)
-                for k, v in updated_df.attrs.items():
-                    metadata_text.insert(tk.END, f"{k}: {v}\n")
-                    
-                # Clear input field
-                rename_entry.delete(0, tk.END)
-                
-                # Update file list with new filename
-                refresh_file_list()
-                dropdown_var.set(new_sample_name)
-                
-                # Restore button
-                rename_button.config(text="Rename File", state="normal")
-                
-                messagebox.showinfo("Success", f"File renamed from '{old_sample_name}' to '{new_sample_name}' successfully.\nOld filename stored in metadata.")
-            
-            root.after(0, success_update)
-            
-        except Exception as e:
-            # Error handling with attempted cleanup and rollback
-            error_msg = str(e)
-            
-            # Try to clean up any temporary files
-            cleanup_files = [temp_parquet_key, temp_wav_key, backup_parquet_key, backup_wav_key]
-            for cleanup_file in cleanup_files:
-                if cleanup_file:
-                    try:
-                        s3_client.delete_object(Bucket=BUCKET_NAME, Key=cleanup_file)
-                    except:
-                        pass  # Ignore cleanup errors during error handling
-            
-            def error_update():
-                rename_button.config(text="Rename File", state="normal")
-                messagebox.showerror("Rename Error", f"Failed to rename file safely: {error_msg}")
-            
-            root.after(0, error_update)
-    
-    # Start the safe rename operation in background thread
-    threading.Thread(target=rename_worker, daemon=True).start()
 
 def on_closing():
     try:
