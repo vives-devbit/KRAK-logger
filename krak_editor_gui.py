@@ -5,6 +5,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
+import sounddevice as sd
+import scipy.io.wavfile as wav
 import dotenv
 import datetime
 import os
