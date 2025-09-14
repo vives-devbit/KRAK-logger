@@ -22,6 +22,13 @@ loaded_df = None
 current_sample_name = None
 metadata_cache = {}
 
+# Playback tracking variables
+playback_line = None
+playback_active = False
+playback_start_time = None
+audio_duration = None
+playback_timer = None
+
 
 def create_minio_client():
     """Create and return MinIO client"""
@@ -652,6 +659,7 @@ def show_context_menu(event):
 
 def update_plot(time_axis, data, title="Loaded Data"):
     """Update the plot with new data"""
+    global playback_line
     ax1.clear()
     ax2.clear()
     ax1.plot(time_axis, data[0], 'b-', label="AI0")
@@ -662,7 +670,113 @@ def update_plot(time_axis, data, title="Loaded Data"):
     ax1.tick_params(axis="y", labelcolor="b")
     ax2.tick_params(axis="y", labelcolor="r")
     ax1.set_title(title)
+
+    # Reset playback line reference since plot was cleared
+    playback_line = None
+
     fig.canvas.draw()
+
+def update_playback_line():
+    """Update the playback line position based on current audio time"""
+    global playback_line, playback_active, playback_start_time, audio_duration, playback_timer
+
+    if not playback_active or playback_start_time is None or loaded_df is None:
+        return
+
+    try:
+        # Calculate current playback position
+        import time
+        current_time = time.time()
+        elapsed_time = current_time - playback_start_time
+
+        # Adaptive delay compensation based on audio complexity
+        # Start with base delay and adjust based on system performance
+        base_delay = 0.05  # 50ms base delay
+
+        # Check if audio is still playing (sounddevice status)
+        try:
+            if not sd.get_stream().active:
+                # Audio finished, stop tracking
+                stop_playback_line()
+                return
+        except:
+            pass  # Continue if we can't check stream status
+
+        # Adaptive delay based on audio duration (longer files often have more delay)
+        if audio_duration:
+            if audio_duration > 10:  # Long files (>10s)
+                adaptive_delay = base_delay + 0.05  # +50ms
+            elif audio_duration > 5:  # Medium files (5-10s)
+                adaptive_delay = base_delay + 0.03  # +30ms
+            else:  # Short files (<5s)
+                adaptive_delay = base_delay + 0.01  # +10ms
+        else:
+            adaptive_delay = base_delay
+
+        playback_position = elapsed_time - adaptive_delay
+
+        # Ensure position is within bounds
+        if playback_position < 0:
+            playback_position = 0
+        elif audio_duration and playback_position > audio_duration:
+            # Audio finished
+            stop_playback_line()
+            return
+
+        # Get plot limits
+        time_data = loaded_df["Time (s)"]
+        max_time = time_data.max()
+        min_time = time_data.min()
+
+        # Only draw line if position is within data range
+        if min_time <= playback_position <= max_time:
+            # Remove old line efficiently
+            if playback_line:
+                try:
+                    playback_line.remove()
+                    playback_line = None
+                except:
+                    pass
+
+            # Add new playback line
+            playback_line = ax1.axvline(x=playback_position, color='red', linestyle='-', linewidth=2, alpha=0.8)
+
+            # Optimize drawing - only update canvas every few frames to reduce CPU load
+            # For complex plots, reduce update frequency
+            update_interval = 50  # Default 50ms
+            if audio_duration and audio_duration > 10:  # Long files
+                update_interval = 100  # Slower updates for complex files
+            elif len(loaded_df) > 50000:  # Large datasets
+                update_interval = 75  # Moderate update rate
+
+            fig.canvas.draw_idle()  # Use draw_idle for better performance
+
+        # Schedule next update with adaptive timing
+        if playback_active:
+            playback_timer = root.after(update_interval, update_playback_line)
+
+    except Exception as e:
+        print(f"Error updating playback line: {e}")
+
+def stop_playback_line():
+    """Stop the playback line updates"""
+    global playback_line, playback_active, playback_timer
+
+    playback_active = False
+
+    # Cancel timer
+    if playback_timer:
+        root.after_cancel(playback_timer)
+        playback_timer = None
+
+    # Remove playback line
+    if playback_line:
+        try:
+            playback_line.remove()
+            fig.canvas.draw_idle()
+        except:
+            pass
+        playback_line = None
 
 def play_wav_file():
     """Play the WAV file corresponding to the loaded parquet file"""
@@ -697,8 +811,25 @@ def play_wav_file():
         # Load and play the WAV file
         rate, data = wav.read(temp_wav_path)
 
-        # Play audio
-        sd.play(data, rate)
+        # Calculate audio duration
+        global audio_duration, playback_active, playback_start_time
+        audio_duration = len(data) / rate
+
+        # Configure audio settings for better performance
+        # Use lower latency and larger buffer size for smoother playback
+        sd.default.latency = 'low'
+        sd.default.blocksize = 1024  # Smaller block size for lower latency
+
+        # Start playback line tracking
+        playback_active = True
+        import time
+        playback_start_time = time.time()
+
+        # Play audio with optimized settings
+        sd.play(data, rate, blocking=False)
+
+        # Start updating playback line
+        update_playback_line()
 
         # Clean up temporary file
         try:
@@ -713,8 +844,10 @@ def play_wav_file():
 
 def stop_audio():
     """Stop audio playback"""
+    global playback_active
     try:
         sd.stop()
+        stop_playback_line()
         messagebox.showinfo("Audio Stopped", "Audio playback stopped.")
     except Exception as e:
         messagebox.showerror("Stop Error", f"Failed to stop audio: {str(e)}")
