@@ -29,6 +29,11 @@ playback_start_time = None
 audio_duration = None
 playback_timer = None
 
+# Delay learning system
+learned_delays = {}  # Dictionary to store learned delays per file
+current_file_delay = None  # Current file's learned delay
+delay_learning_active = False  # Whether we're learning delay for current file
+
 
 def create_minio_client():
     """Create and return MinIO client"""
@@ -812,8 +817,18 @@ def play_wav_file():
         rate, data = wav.read(temp_wav_path)
 
         # Calculate audio duration
-        global audio_duration, playback_active, playback_start_time
+        global audio_duration, playback_active, playback_start_time, current_file_delay, delay_learning_active
         audio_duration = len(data) / rate
+
+        # Check if we have a learned delay for this file
+        if current_sample_name in learned_delays:
+            current_file_delay = learned_delays[current_sample_name]
+            delay_learning_active = False
+            print(f"Using learned delay of {current_file_delay:.3f}s for {current_sample_name}")
+        else:
+            current_file_delay = None
+            delay_learning_active = True
+            print(f"Learning delay for {current_sample_name} during this playback")
 
         # Configure audio settings for better performance
         # Use lower latency and larger buffer size for smoother playback
