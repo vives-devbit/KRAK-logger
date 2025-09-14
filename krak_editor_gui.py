@@ -96,7 +96,7 @@ def load_metadata_cache():
         for i, parquet_key in enumerate(parquet_files):
             try:
                 # Update progress
-                progress_var.set(f"Loading metadata... {i+1}/{len(parquet_files)}")
+                search_progress_var.set(f"Loading metadata... {i+1}/{len(parquet_files)}")
                 root.update_idletasks()
 
                 response = minio_client.get_object(BUCKET_NAME, parquet_key)
@@ -107,7 +107,7 @@ def load_metadata_cache():
                 print(f"Error loading metadata for {parquet_key}: {e}")
                 continue
 
-        progress_var.set(f"Loaded metadata for {len(metadata_cache)} files")
+        search_progress_var.set(f"Loaded metadata for {len(metadata_cache)} files")
         return True
     except S3Error as e:
         messagebox.showerror("Cache Error", f"MinIO Error loading metadata cache: {e}")
@@ -188,70 +188,119 @@ def match_date_criteria(metadata_value, search_value):
         return search_value.lower() in str(metadata_value).lower()
 
 def search_metadata():
-    if not metadata_cache:
-        if not load_metadata_cache():
+    try:
+        # Check if cache exists and is not empty
+        if not metadata_cache:
+            # Show warning and ask user to load cache
+            result = messagebox.askyesno(
+                "Cache Not Loaded",
+                "Search requires metadata cache to be loaded first.\n\n"
+                "This may take some time depending on the number of files.\n\n"
+                "Do you want to load the cache now?"
+            )
+            if not result:
+                return
+
+            # Show progress and load cache
+            search_progress_var.set("Loading metadata cache...")
+            root.update_idletasks()
+
+            if not load_metadata_cache():
+                messagebox.showerror("Cache Error", "Failed to load metadata cache. Search cancelled.")
+                search_progress_var.set("Cache loading failed")
+                return
+
+        # Validate cache is not empty after loading
+        if not metadata_cache:
+            messagebox.showwarning("No Data", "No metadata found in cache. Cannot perform search.")
             return
-    
-    key1 = search_key1_entry.get().strip()
-    value1 = search_value1_entry.get().strip()
-    key2 = search_key2_entry.get().strip()
-    value2 = search_value2_entry.get().strip()
-    key3 = search_key3_entry.get().strip()
-    value3 = search_value3_entry.get().strip()
-    key4 = search_key4_entry.get().strip()
-    value4 = search_value4_entry.get().strip()
-    
-    # Date search criteria
-    date_search = date_search_entry.get().strip()
-    
-    search_criteria = []
-    if key1 and value1:
-        search_criteria.append((key1, value1))
-    if key2 and value2:
-        search_criteria.append((key2, value2))
-    if key3 and value3:
-        search_criteria.append((key3, value3))
-    if key4 and value4:
-        search_criteria.append((key4, value4))
-    
-    if not search_criteria and not date_search:
-        refresh_file_list()
-        return
-    
-    matching_files = []
-    for filename, metadata in metadata_cache.items():
-        matches = True
-        
-        # Check regular key-value pairs
-        for key, value in search_criteria:
-            if key not in metadata or str(metadata[key]).lower() != value.lower():
-                matches = False
-                break
-        
-        # Check date search if specified
-        if matches and date_search:
-            date_match = False
-            # Search in common timestamp fields
-            timestamp_fields = ['Timestamp', 'timestamp', 'Date', 'date', 'created', 'Created']
-            for field in timestamp_fields:
-                if field in metadata:
-                    if match_date_criteria(metadata[field], date_search):
-                        date_match = True
+
+        # Get search criteria
+        key1 = search_key1_entry.get().strip()
+        value1 = search_value1_entry.get().strip()
+        key2 = search_key2_entry.get().strip()
+        value2 = search_value2_entry.get().strip()
+        key3 = search_key3_entry.get().strip()
+        value3 = search_value3_entry.get().strip()
+        key4 = search_key4_entry.get().strip()
+        value4 = search_value4_entry.get().strip()
+
+        # Date search criteria
+        date_search = date_search_entry.get().strip()
+
+        search_criteria = []
+        if key1 and value1:
+            search_criteria.append((key1, value1))
+        if key2 and value2:
+            search_criteria.append((key2, value2))
+        if key3 and value3:
+            search_criteria.append((key3, value3))
+        if key4 and value4:
+            search_criteria.append((key4, value4))
+
+        if not search_criteria and not date_search:
+            refresh_file_list()
+            search_progress_var.set("Showing all files")
+            return
+
+        # Perform search with progress indication
+        search_progress_var.set("Searching...")
+        root.update_idletasks()
+
+        matching_files = []
+        total_files = len(metadata_cache)
+        processed = 0
+
+        for filename, metadata in metadata_cache.items():
+            try:
+                matches = True
+
+                # Check regular key-value pairs
+                for key, value in search_criteria:
+                    if key not in metadata or str(metadata[key]).lower() != value.lower():
+                        matches = False
                         break
-            
-            # Also search filename for date patterns
-            if not date_match:
-                if match_date_criteria(filename, date_search):
-                    date_match = True
-            
-            if not date_match:
-                matches = False
-        
-        if matches:
-            matching_files.append(filename)
-    
-    refresh_file_list(sorted(matching_files))
-    status_var.set(f"Found {len(matching_files)} matching files")
+
+                # Check date search if specified
+                if matches and date_search:
+                    date_match = False
+                    # Search in common timestamp fields
+                    timestamp_fields = ['Timestamp', 'timestamp', 'Date', 'date', 'created', 'Created']
+                    for field in timestamp_fields:
+                        if field in metadata:
+                            if match_date_criteria(metadata[field], date_search):
+                                date_match = True
+                                break
+
+                    # Also search filename for date patterns
+                    if not date_match:
+                        if match_date_criteria(filename, date_search):
+                            date_match = True
+
+                    if not date_match:
+                        matches = False
+
+                if matches:
+                    matching_files.append(filename)
+
+                # Update progress occasionally
+                processed += 1
+                if processed % 50 == 0:  # Update every 50 files
+                    search_progress_var.set(f"Searching... {processed}/{total_files}")
+                    root.update_idletasks()
+
+            except Exception as e:
+                print(f"Error processing file {filename}: {e}")
+                continue
+
+        # Update results
+        refresh_file_list(sorted(matching_files))
+        search_progress_var.set(f"Found {len(matching_files)} matching files")
+
+    except Exception as e:
+        messagebox.showerror("Search Error", f"An error occurred during search: {str(e)}")
+        search_progress_var.set("Search failed")
+        print(f"Search error: {e}")
 
 def clear_search():
     search_key1_entry.delete(0, tk.END)
@@ -264,7 +313,7 @@ def clear_search():
     search_value4_entry.delete(0, tk.END)
     date_search_entry.delete(0, tk.END)
     refresh_file_list()
-    status_var.set("Showing all files")
+    search_progress_var.set("Showing all files")
 
 def save_metadata_to_s3():
     global loaded_df, current_sample_name
@@ -618,15 +667,13 @@ root.title("KRAK Metadata Editor")
 root.geometry("1000x700")
 
 # Create main frames
-left_frame = tk.Frame(root)
+left_frame = tk.Frame(root, width=400)
 left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+left_frame.pack_propagate(False)  # Maintain fixed width
 
-# Center frame for plot
+# Center frame for playback controls and plot
 center_frame = tk.Frame(root)
-center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=10)
-
-right_frame = tk.Frame(root)
-right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
 # Search section (top of left frame)
 search_frame = tk.LabelFrame(left_frame, text="Metadata Search", padx=10, pady=10)
@@ -690,9 +737,16 @@ clear_search_button.pack(side=tk.LEFT, padx=5)
 refresh_cache_button = tk.Button(button_frame, text="Refresh Cache", command=refresh_cache)
 refresh_cache_button.pack(side=tk.LEFT, padx=5)
 
-# File list section (center of left frame)
-file_list_frame = tk.LabelFrame(left_frame, text="Files on Server", padx=10, pady=10)
-file_list_frame.pack(fill=tk.BOTH, expand=True)
+# Progress display for search operations
+search_progress_var = tk.StringVar()
+search_progress_var.set("Ready")
+search_progress_label = tk.Label(search_frame, textvariable=search_progress_var,
+                                font=('TkDefaultFont', 9), fg='blue', relief=tk.SUNKEN, anchor=tk.W)
+search_progress_label.pack(fill=tk.X, pady=(5, 0))
+
+# File list section (upper part of left frame)
+file_list_frame = tk.LabelFrame(left_frame, text="Files on Server", padx=5, pady=5)
+file_list_frame.pack(fill=tk.X, pady=(5, 5))
 
 # File listbox with scrollbar
 listbox_frame = tk.Frame(file_list_frame)
@@ -701,7 +755,7 @@ listbox_frame.pack(fill=tk.BOTH, expand=True)
 scrollbar = tk.Scrollbar(listbox_frame)
 scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-file_listbox = tk.Listbox(listbox_frame, yscrollcommand=scrollbar.set, font=("Courier", 9))
+file_listbox = tk.Listbox(listbox_frame, yscrollcommand=scrollbar.set, font=("Courier", 9), height=15)
 file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 scrollbar.config(command=file_listbox.yview)
 
@@ -732,65 +786,61 @@ current_file_var.set("No file loaded")
 current_file_label = tk.Label(file_list_frame, textvariable=current_file_var, font=('TkDefaultFont', 9), fg='blue')
 current_file_label.pack(pady=(5, 0))
 
-# Metadata display and editing section (right frame)
-metadata_frame = tk.LabelFrame(right_frame, text="Metadata", padx=10, pady=10)
-metadata_frame.pack(fill=tk.BOTH, expand=True)
+# Metadata section (lower part of left frame)
+metadata_frame = tk.LabelFrame(left_frame, text="Metadata", padx=5, pady=5)
+metadata_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
 
-metadata_text = tk.Text(metadata_frame, height=15, width=40)
-metadata_text.pack(fill=tk.BOTH, expand=True)
+metadata_text = tk.Text(metadata_frame, height=4, width=45)
+metadata_text.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
 
 # Add metadata section
 add_metadata_label = tk.Label(metadata_frame, text="Add New Metadata:")
-add_metadata_label.pack(pady=(10, 0))
+add_metadata_label.pack(pady=(5, 0))
 
 metadata_key_frame = tk.Frame(metadata_frame)
 metadata_key_frame.pack(fill=tk.X, pady=2)
 tk.Label(metadata_key_frame, text="Key:").pack(side=tk.LEFT)
-metadata_key_entry = tk.Entry(metadata_key_frame, width=20)
-metadata_key_entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
-
-metadata_value_frame = tk.Frame(metadata_frame)
-metadata_value_frame.pack(fill=tk.X, pady=2)
-tk.Label(metadata_value_frame, text="Value:").pack(side=tk.LEFT)
-metadata_value_entry = tk.Entry(metadata_value_frame, width=20)
-metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+metadata_key_entry = tk.Entry(metadata_key_frame, width=15)
+metadata_key_entry.pack(side=tk.LEFT, padx=(2, 5))
+tk.Label(metadata_key_frame, text="Value:").pack(side=tk.LEFT)
+metadata_value_entry = tk.Entry(metadata_key_frame, width=15)
+metadata_value_entry.pack(side=tk.LEFT, padx=(2, 5))
 
 save_metadata_button = tk.Button(metadata_frame, text="Save Metadata to MinIO", command=save_metadata_to_s3)
-save_metadata_button.pack(pady=(5, 0))
+save_metadata_button.pack(pady=(2, 0))
 
 # Update metadata section
 update_metadata_label = tk.Label(metadata_frame, text="Update Existing Metadata:")
-update_metadata_label.pack(pady=(10, 0))
+update_metadata_label.pack(pady=(5, 0))
 
 update_metadata_key_frame = tk.Frame(metadata_frame)
 update_metadata_key_frame.pack(fill=tk.X, pady=2)
 tk.Label(update_metadata_key_frame, text="Key:").pack(side=tk.LEFT)
-update_metadata_key_entry = tk.Entry(update_metadata_key_frame, width=20)
-update_metadata_key_entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
-
-update_metadata_value_frame = tk.Frame(metadata_frame)
-update_metadata_value_frame.pack(fill=tk.X, pady=2)
-tk.Label(update_metadata_value_frame, text="New Value:").pack(side=tk.LEFT)
-update_metadata_value_entry = tk.Entry(update_metadata_value_frame, width=20)
-update_metadata_value_entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+update_metadata_key_entry = tk.Entry(update_metadata_key_frame, width=15)
+update_metadata_key_entry.pack(side=tk.LEFT, padx=(2, 5))
+tk.Label(update_metadata_key_frame, text="New Value:").pack(side=tk.LEFT)
+update_metadata_value_entry = tk.Entry(update_metadata_key_frame, width=15)
+update_metadata_value_entry.pack(side=tk.LEFT, padx=(2, 5))
 
 update_metadata_button = tk.Button(metadata_frame, text="Update Metadata", command=update_metadata_in_s3)
-update_metadata_button.pack(pady=(5, 0))
+update_metadata_button.pack(pady=(2, 0))
 
-# Status bar at the bottom
-status_frame = tk.Frame(root)
-status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+# Playback controls (top of center frame)
+playback_frame = tk.LabelFrame(center_frame, text="Playback Controls", padx=10, pady=5)
+playback_frame.pack(fill=tk.X, pady=(0, 10))
+
+# Placeholder label for future playback functions
+playback_placeholder = tk.Label(playback_frame, text="Playback functions will be added here",
+                               font=('TkDefaultFont', 9), fg='gray')
+playback_placeholder.pack(pady=10)
+
+# Keep status_var and progress_var for compatibility but don't display them
 status_var = tk.StringVar()
 status_var.set("Ready")
-status_label = tk.Label(status_frame, textvariable=status_var, relief=tk.SUNKEN, anchor=tk.W)
-status_label.pack(fill=tk.X)
-
 progress_var = tk.StringVar()
 progress_var.set("")
-progress_label = tk.Label(status_frame, textvariable=progress_var, relief=tk.SUNKEN, anchor=tk.E)
-progress_label.pack(side=tk.RIGHT)
 
-# Add plot to center frame
+# Add plot to center frame (below playback controls)
 fig, ax1 = plt.subplots(figsize=(8, 6))
 ax2 = ax1.twinx()
 canvas = FigureCanvasTkAgg(fig, master=center_frame)
@@ -799,11 +849,5 @@ canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 # Initialize file list
 refresh_file_list()
 
-# Add help text for copy functionality
-help_frame = tk.Frame(root)
-help_frame.pack(side=tk.BOTTOM, fill=tk.X, before=status_frame)
-help_text = "Right-click on files for options • Ctrl+C: Copy selected • Ctrl+A: Copy all visible • Enter/Double-click: Load"
-help_label = tk.Label(help_frame, text=help_text, font=('TkDefaultFont', 8), fg='gray')
-help_label.pack()
 
 root.mainloop()
