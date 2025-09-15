@@ -1155,5 +1155,50 @@ canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 # Initialize file list
 refresh_file_list()
 
+def on_closing():
+    """Clean shutdown when window is closed"""
+    try:
+        # Stop any audio playback
+        sd.stop()
+        print("Audio playback stopped")
+    except Exception as e:
+        print(f"Error stopping audio: {e}")
+
+    try:
+        # Stop playback line updates
+        stop_playback_line()
+        print("Playback line stopped")
+    except Exception as e:
+        print(f"Error stopping playback line: {e}")
+
+    try:
+        # Save learned delays before closing
+        save_learned_delays()
+        print("Learned delays saved")
+    except Exception as e:
+        print(f"Error saving delays: {e}")
+
+    try:
+        # Stop matplotlib animations/timers
+        plt.close('all')
+        print("Matplotlib plots closed")
+    except Exception as e:
+        print(f"Error closing plots: {e}")
+
+    # Attempt to stop all non-main threads gracefully
+    for thread in threading.enumerate():
+        if thread is not threading.main_thread():
+            try:
+                print(f"Waiting for thread to finish: {thread.name}")
+                thread.join(timeout=2)
+            except Exception as e:
+                print(f"Error joining thread {thread.name}: {e}")
+
+    print("Cleanup complete, closing editor")
+    root.quit()  # Stop the mainloop
+    root.destroy()  # Destroy the window
+
+# Bind the cleanup function to window close event
+root.protocol("WM_DELETE_WINDOW", on_closing)
 
 root.mainloop()

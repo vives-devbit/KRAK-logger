@@ -495,21 +495,38 @@ def launch_editor():
 
 def on_closing():
     try:
+        # Stop any audio playback
+        sd.stop()
+        print("Audio playback stopped")
+    except Exception as e:
+        print(f"Error stopping audio: {e}")
+
+    try:
+        # Close LAN-XI stream
         Lanxi.close_stream()
+        print("LAN-XI stream closed")
     except Exception as e:
         print(f"Error closing LAN-XI stream: {e}")
+
+    try:
+        # Stop matplotlib animations/timers
+        plt.close('all')
+        print("Matplotlib plots closed")
+    except Exception as e:
+        print(f"Error closing plots: {e}")
+
     # Attempt to stop all non-main threads gracefully
     for thread in threading.enumerate():
         if thread is not threading.main_thread():
             try:
-                # If your threads are daemon, they will exit with the main program.
-                # If not, you may need to implement a stop mechanism for your threads.
-                # Here, we just print their names for awareness.
                 print(f"Waiting for thread to finish: {thread.name}")
-                thread.join(timeout=1)
+                thread.join(timeout=2)  # Increased timeout
             except Exception as e:
                 print(f"Error joining thread {thread.name}: {e}")
-    root.destroy()
+
+    print("Cleanup complete, closing application")
+    root.quit()  # Stop the mainloop
+    root.destroy()  # Destroy the window
 
 # Create the GUI
 root = tk.Tk()
