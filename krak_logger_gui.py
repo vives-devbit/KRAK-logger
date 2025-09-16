@@ -231,6 +231,9 @@ def record_data():
     audio_data = (data[0] / max_voltage * 32767).astype(np.int16)
     wav.write(OUTPUT_WAV_FILE, SAMPLE_RATE, audio_data)
 
+    # Make upload button red to indicate data needs to be uploaded
+    upload_button.config(bg="red", fg="white")
+
     messagebox.showinfo("Recording Complete", "Recording finished and audio saved.")
 
 
@@ -390,7 +393,7 @@ def upload_to_minio():
 
             # Step 6: Update search index
             def success_update():
-                upload_button.config(text="Upload to MinIO", state="normal")
+                upload_button.config(text="Upload to MinIO", state="normal", bg="SystemButtonFace", fg="black")
 
                 # Update search index with metadata
                 metadata = get_all_metadata()
@@ -455,13 +458,6 @@ def start_recording():
         threading.Thread(target=record_data, daemon=True).start()
 
 
-def play_audio():
-    try:
-        rate, data = wav.read(OUTPUT_WAV_FILE)
-        sd.play(data, rate)
-        sd.wait()
-    except Exception as e:
-        messagebox.showerror("Playback Error", f"Unable to play audio: {str(e)}")
 
 
 def update_plot(time_axis, data, title="Recorded Data"):
@@ -808,8 +804,6 @@ record_button.pack(anchor="e")
 upload_button = tk.Button(recording_section, text="Upload to MinIO", command=upload_to_minio)
 upload_button.pack(anchor="e")
 
-play_button = tk.Button(recording_section, text="Play Audio", command=play_audio)
-play_button.pack(anchor="e")
 
 # File list display for S3 files
 file_section = tk.LabelFrame(control_frame, text="File Management", padx=5, pady=5)
