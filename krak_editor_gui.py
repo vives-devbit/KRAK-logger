@@ -11,6 +11,7 @@ import dotenv
 import datetime
 import os
 import io
+import json
 from datetime import datetime as dt
 import re
 from minio import Minio
@@ -18,9 +19,10 @@ from minio.error import S3Error
 from minio.commonconfig import CopySource
 
 BUCKET_NAME = "krak"
+INDEX_FILE_NAME = "search_index.json"
 loaded_df = None
 current_sample_name = None
-metadata_cache = {}
+search_index = {}
 
 # Playback tracking variables
 playback_line = None
@@ -57,29 +59,6 @@ def create_minio_client():
         region=os.getenv("MINIO_REGION", "us-east-1")  # Default region
     )
 
-def sync_metadata_to_tags(object_name, metadata_dict):
-    """Sync metadata dictionary to MinIO object tags"""
-    try:
-        minio_client = create_minio_client()
-
-        # Convert metadata to tags format (MinIO tags are key-value pairs)
-        tags = {}
-        for key, value in metadata_dict.items():
-            # MinIO tag keys and values must be strings, and have length restrictions
-            tag_key = str(key).replace(' ', '_')[:128]  # Replace spaces and limit length
-            tag_value = str(value)[:256]  # Limit tag value length
-            tags[tag_key] = tag_value
-
-        # Apply tags to the object
-        minio_client.set_object_tags(BUCKET_NAME, object_name, tags)
-        print(f"Applied {len(tags)} tags to {object_name}")
-        return True
-    except S3Error as e:
-        print(f"MinIO Error applying tags to {object_name}: {e}")
-        return False
-    except Exception as e:
-        print(f"Failed to apply tags to {object_name}: {str(e)}")
-        return False
 
 def list_s3_files():
     try:
@@ -99,36 +78,238 @@ def list_s3_files():
         print(f"Error listing files: {e}")
         return []
 
-def load_metadata_cache():
-    global metadata_cache
+def load_search_index():
+    global search_index
     try:
+        search_progress_var.set("Loading search index from server...")
+        root.update_idletasks()
+
         minio_client = create_minio_client()
-        objects = minio_client.list_objects(BUCKET_NAME)
 
-        parquet_files = [obj.object_name for obj in objects if obj.object_name.endswith('.parquet')]
+        # Download the search index
+        response = minio_client.get_object(BUCKET_NAME, INDEX_FILE_NAME)
+        index_data = json.loads(response.read().decode('utf-8'))
 
-        for i, parquet_key in enumerate(parquet_files):
-            try:
-                # Update progress
-                search_progress_var.set(f"Loading metadata... {i+1}/{len(parquet_files)}")
-                root.update_idletasks()
+        # Convert to the format expected by the GUI (base_name -> metadata)
+        search_index = {}
+        for filename, metadata in index_data.get('files', {}).items():
+            base_name = os.path.splitext(os.path.basename(filename))[0]
+            # Remove _file_info for GUI compatibility, keep original metadata
+            clean_metadata = {k: v for k, v in metadata.items() if k != '_file_info'}
+            search_index[base_name] = clean_metadata
 
-                response = minio_client.get_object(BUCKET_NAME, parquet_key)
-                df = pd.read_parquet(io.BytesIO(response.read()))
-                base_name = os.path.splitext(os.path.basename(parquet_key))[0]
-                metadata_cache[base_name] = dict(df.attrs)
-            except Exception as e:
-                print(f"Error loading metadata for {parquet_key}: {e}")
-                continue
+        index_info = index_data.get('index_info', {})
+        created_at = index_info.get('created_at', 'Unknown')
+        total_files = len(search_index)
 
-        search_progress_var.set(f"Loaded metadata for {len(metadata_cache)} files")
+        search_progress_var.set(f"Loaded index with {total_files} files (created: {created_at[:19]})")
+
+        # Update dropdown values with available keys
+        update_search_key_dropdowns()
+
         return True
+
     except S3Error as e:
-        messagebox.showerror("Cache Error", f"MinIO Error loading metadata cache: {e}")
+        if "NoSuchKey" in str(e):
+            messagebox.showerror("Index Error",
+                f"Search index not found on server.\n\n"
+                f"Please run 'python parquet_search_indexer.py' first to create the index.")
+        else:
+            messagebox.showerror("Index Error", f"MinIO Error loading search index: {e}")
+        search_progress_var.set("Index loading failed")
+        return False
+    except json.JSONDecodeError as e:
+        messagebox.showerror("Index Error", f"Invalid search index format: {e}")
+        search_progress_var.set("Index format error")
         return False
     except Exception as e:
-        messagebox.showerror("Cache Error", f"Failed to load metadata cache: {e}")
+        messagebox.showerror("Index Error", f"Failed to load search index: {e}")
+        search_progress_var.set("Index loading failed")
         return False
+
+
+def update_search_index_on_server(filename, updated_metadata):
+    """
+    Update the search index on the server with new/updated metadata for a file
+
+    Args:
+        filename: Base filename (without .parquet extension)
+        updated_metadata: Dictionary of metadata to update in the index
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        minio_client = create_minio_client()
+        parquet_filename = f"{filename}.parquet"
+
+        # Download existing index
+        try:
+            response = minio_client.get_object(BUCKET_NAME, INDEX_FILE_NAME)
+            index_data = json.loads(response.read().decode('utf-8'))
+        except S3Error as e:
+            if "NoSuchKey" in str(e):
+                # Create new index if it doesn't exist
+                index_data = {
+                    "index_info": {
+                        "created_at": datetime.now().isoformat(),
+                        "total_files": 0,
+                        "index_version": "1.0"
+                    },
+                    "files": {}
+                }
+            else:
+                raise e
+
+        # Get file info
+        try:
+            stat = minio_client.stat_object(BUCKET_NAME, parquet_filename)
+            file_info = {
+                'filename': parquet_filename,
+                'size_bytes': stat.size,
+                'last_modified': stat.last_modified.isoformat() if stat.last_modified else None,
+                'rows': 'Unknown',  # We don't have access to the DataFrame here
+                'columns': 'Unknown',
+                'column_names': 'Unknown'
+            }
+        except:
+            # If we can't get file stats, use basic info
+            file_info = {
+                'filename': parquet_filename,
+                'size_bytes': 'Unknown',
+                'last_modified': datetime.now().isoformat(),
+                'rows': 'Unknown',
+                'columns': 'Unknown',
+                'column_names': 'Unknown'
+            }
+
+        # Update the index entry
+        if parquet_filename in index_data['files']:
+            # Update existing entry - preserve file info but update metadata
+            existing_entry = index_data['files'][parquet_filename]
+            existing_file_info = existing_entry.get('_file_info', file_info)
+
+            # Merge updated metadata with existing metadata
+            updated_entry = dict(updated_metadata)
+            updated_entry['_file_info'] = existing_file_info
+            index_data['files'][parquet_filename] = updated_entry
+        else:
+            # Create new entry
+            file_metadata = dict(updated_metadata)
+            file_metadata['_file_info'] = file_info
+            index_data['files'][parquet_filename] = file_metadata
+
+        # Update index info
+        index_data['index_info']['total_files'] = len(index_data['files'])
+        index_data['index_info']['last_updated'] = datetime.now().isoformat()
+
+        # Upload updated index
+        json_bytes = json.dumps(index_data, indent=2, ensure_ascii=False).encode('utf-8')
+        json_buffer = io.BytesIO(json_bytes)
+
+        minio_client.put_object(
+            BUCKET_NAME,
+            INDEX_FILE_NAME,
+            json_buffer,
+            len(json_bytes),
+            content_type='application/json'
+        )
+
+        print(f"Successfully updated search index for {parquet_filename}")
+
+        # Show success dialog
+        messagebox.showinfo("Search Index Updated",
+                           f"Successfully updated search index for {filename}!\n\n"
+                           f"Total files in index: {index_data['index_info']['total_files']}\n\n"
+                           f"The metadata changes are now searchable from all locations.")
+        return True
+
+    except Exception as e:
+        error_msg = f"Failed to update search index: {str(e)}"
+        print(error_msg)
+
+        # Show error dialog but don't fail the operation
+        messagebox.showwarning("Search Index Warning",
+                              f"Metadata was saved successfully to {filename}.parquet,\n"
+                              f"but the search index could not be updated.\n\n"
+                              f"Error: {str(e)}\n\n"
+                              f"The changes won't be searchable until the index is rebuilt.")
+        return False
+
+
+def get_available_search_keys():
+    """
+    Get all unique metadata keys from the search index
+
+    Returns:
+        list: Sorted list of unique metadata keys (excluding specified keys)
+    """
+    # Keys to exclude from dropdown lists
+    excluded_keys = {
+        "Distance (mm)", "H", "Measurement Parameters", "Probe", "Sample",
+        "Sample Rate (Hz)", "Test_Author", "Test_Product", "Test_metadata",
+        "Timestamp", "snelheid", "par1", "par2", "probe", "preload", "exp nr."
+    }
+
+    keys = set()
+
+    # Check if we have a search index loaded
+    if search_index:
+        for metadata in search_index.values():
+            for key in metadata.keys():
+                if key != '_file_info' and key not in excluded_keys:  # Exclude internal file info and specified keys
+                    keys.add(key)
+
+    return sorted(list(keys))
+
+
+def get_current_file_metadata_keys():
+    """
+    Get all metadata keys from the currently loaded file
+
+    Returns:
+        list: Sorted list of metadata keys from the current file
+    """
+    if loaded_df is None:
+        return []
+
+    return sorted(list(loaded_df.attrs.keys()))
+
+
+def update_metadata_key_dropdowns():
+    """
+    Update the dropdown values for update metadata key combobox with keys from the current file
+    """
+    try:
+        available_keys = get_current_file_metadata_keys()
+
+        # Update only the update metadata key combobox
+        update_metadata_key_entry['values'] = available_keys
+
+        print(f"Updated update metadata key dropdown with {len(available_keys)} keys from current file: {available_keys}")
+
+    except Exception as e:
+        print(f"Error updating metadata key dropdowns: {e}")
+
+
+def update_search_key_dropdowns():
+    """
+    Update the dropdown values for search key comboboxes with available keys from the index
+    """
+    try:
+        available_keys = get_available_search_keys()
+
+        # Update all search key comboboxes
+        search_key1_entry['values'] = available_keys
+        search_key2_entry['values'] = available_keys
+        search_key3_entry['values'] = available_keys
+        search_key4_entry['values'] = available_keys
+
+        print(f"Updated search key dropdowns with {len(available_keys)} keys: {available_keys}")
+
+    except Exception as e:
+        print(f"Error updating search key dropdowns: {e}")
+
 
 def refresh_file_list(filtered_files=None):
     file_listbox.delete(0, tk.END)
@@ -136,7 +317,7 @@ def refresh_file_list(filtered_files=None):
         files_to_show = filtered_files
     else:
         files_to_show = list_s3_files()
-    
+
     for file in files_to_show:
         file_listbox.insert(tk.END, file)
 
@@ -168,6 +349,9 @@ def load_sample():
         current_file_var.set(f"Loaded: {base_name}")
         playback_status_var.set(f"Ready to play: {base_name}.wav")
         status_var.set("Ready")
+
+        # Update metadata key dropdowns with keys from the loaded file
+        update_metadata_key_dropdowns()
     except S3Error as e:
         messagebox.showerror("Load Error", f"MinIO Error: {e}")
     except Exception as e:
@@ -204,30 +388,19 @@ def match_date_criteria(metadata_value, search_value):
 
 def search_metadata():
     try:
-        # Check if cache exists and is not empty
-        if not metadata_cache:
-            # Show warning and ask user to load cache
-            result = messagebox.askyesno(
-                "Cache Not Loaded",
-                "Search requires metadata cache to be loaded first.\n\n"
-                "This may take some time depending on the number of files.\n\n"
-                "Do you want to load the cache now?"
-            )
-            if not result:
-                return
+        # Load fresh search index from server each time
+        search_progress_var.set("Loading latest search index...")
+        root.update_idletasks()
 
-            # Show progress and load cache
-            search_progress_var.set("Loading metadata cache...")
-            root.update_idletasks()
+        if not load_search_index():
+            messagebox.showerror("Search Error", "Failed to load search index from server.")
+            search_progress_var.set("Search failed")
+            return
 
-            if not load_metadata_cache():
-                messagebox.showerror("Cache Error", "Failed to load metadata cache. Search cancelled.")
-                search_progress_var.set("Cache loading failed")
-                return
-
-        # Validate cache is not empty after loading
-        if not metadata_cache:
-            messagebox.showwarning("No Data", "No metadata found in cache. Cannot perform search.")
+        # Validate index is not empty after loading
+        if not search_index:
+            messagebox.showwarning("No Data", "No files found in search index. Cannot perform search.")
+            search_progress_var.set("No data in index")
             return
 
         # Get search criteria
@@ -263,10 +436,10 @@ def search_metadata():
         root.update_idletasks()
 
         matching_files = []
-        total_files = len(metadata_cache)
+        total_files = len(search_index)
         processed = 0
 
-        for filename, metadata in metadata_cache.items():
+        for filename, metadata in search_index.items():
             try:
                 matches = True
 
@@ -318,13 +491,13 @@ def search_metadata():
         print(f"Search error: {e}")
 
 def clear_search():
-    search_key1_entry.delete(0, tk.END)
+    search_key1_entry.set('')
     search_value1_entry.delete(0, tk.END)
-    search_key2_entry.delete(0, tk.END)
+    search_key2_entry.set('')
     search_value2_entry.delete(0, tk.END)
-    search_key3_entry.delete(0, tk.END)
+    search_key3_entry.set('')
     search_value3_entry.delete(0, tk.END)
-    search_key4_entry.delete(0, tk.END)
+    search_key4_entry.set('')
     search_value4_entry.delete(0, tk.END)
     date_search_entry.delete(0, tk.END)
     refresh_file_list()
@@ -413,30 +586,28 @@ def save_metadata_to_s3():
             except Exception as cleanup_error:
                 print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
 
-            # Sync metadata to MinIO tags
-            try:
-                if sync_metadata_to_tags(original_key, dict(updated_df.attrs)):
-                    print(f"Successfully synced metadata tags for {original_key}")
-                else:
-                    print(f"Failed to sync metadata tags for {original_key}")
-            except Exception as tag_error:
-                print(f"Warning: Tag sync failed but metadata was saved successfully: {tag_error}")
-
             def success_update():
                 global loaded_df
                 loaded_df = updated_df
                 metadata_text.delete("1.0", tk.END)
                 for k, v in updated_df.attrs.items():
                     metadata_text.insert(tk.END, f"{k}: {v}\n")
-                    
+
                 metadata_key_entry.delete(0, tk.END)
                 metadata_value_entry.delete(0, tk.END)
                 
                 save_metadata_button.config(text="Save Metadata to MinIO", state="normal")
-                
-                # Update cache
-                metadata_cache[sample_name] = dict(updated_df.attrs)
-                
+
+                # Update local search index if it exists
+                if sample_name in search_index:
+                    search_index[sample_name] = dict(updated_df.attrs)
+
+                # Update search index on server
+                try:
+                    update_search_index_on_server(sample_name, dict(updated_df.attrs))
+                except Exception as index_error:
+                    print(f"Warning: Search index update failed: {index_error}")
+
                 messagebox.showinfo("Success", f"Metadata '{metadata_key}' added and saved to MinIO safely.")
             
             root.after(0, success_update)
@@ -560,30 +731,28 @@ def update_metadata_in_s3():
             except Exception as cleanup_error:
                 print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
 
-            # Sync metadata to MinIO tags
-            try:
-                if sync_metadata_to_tags(original_key, dict(updated_df.attrs)):
-                    print(f"Successfully synced metadata tags for {original_key}")
-                else:
-                    print(f"Failed to sync metadata tags for {original_key}")
-            except Exception as tag_error:
-                print(f"Warning: Tag sync failed but metadata was saved successfully: {tag_error}")
-
             def success_update():
                 global loaded_df
                 loaded_df = updated_df
                 metadata_text.delete("1.0", tk.END)
                 for k, v in updated_df.attrs.items():
                     metadata_text.insert(tk.END, f"{k}: {v}\n")
-                    
-                update_metadata_key_entry.delete(0, tk.END)
+
+                update_metadata_key_entry.set('')
                 update_metadata_value_entry.delete(0, tk.END)
                 
                 update_metadata_button.config(text="Update Metadata", state="normal")
-                
-                # Update cache
-                metadata_cache[sample_name] = dict(updated_df.attrs)
-                
+
+                # Update local search index if it exists
+                if sample_name in search_index:
+                    search_index[sample_name] = dict(updated_df.attrs)
+
+                # Update search index on server
+                try:
+                    update_search_index_on_server(sample_name, dict(updated_df.attrs))
+                except Exception as index_error:
+                    print(f"Warning: Search index update failed: {index_error}")
+
                 messagebox.showinfo("Success", f"Metadata '{metadata_key}' updated from '{old_value}' to '{metadata_value}' and saved to MinIO.")
             
             root.after(0, success_update)
@@ -611,17 +780,17 @@ def update_metadata_in_s3():
     
     threading.Thread(target=update_worker, daemon=True).start()
 
-def refresh_cache():
+def refresh_index():
     def refresh_worker():
         try:
-            root.after(0, lambda: refresh_cache_button.config(text="Refreshing...", state="disabled"))
-            success = load_metadata_cache()
+            root.after(0, lambda: refresh_cache_button.config(text="Refreshing Index...", state="disabled"))
+            success = load_search_index()
             if success:
                 root.after(0, lambda: refresh_file_list())
-            root.after(0, lambda: refresh_cache_button.config(text="Refresh Cache", state="normal"))
+            root.after(0, lambda: refresh_cache_button.config(text="Refresh Index", state="normal"))
         except Exception as e:
-            root.after(0, lambda: refresh_cache_button.config(text="Refresh Cache", state="normal"))
-    
+            root.after(0, lambda: refresh_cache_button.config(text="Refresh Index", state="normal"))
+
     threading.Thread(target=refresh_worker, daemon=True).start()
 
 def copy_selected_filename():
@@ -941,7 +1110,7 @@ search_frame.pack(fill=tk.X, pady=(0, 10))
 search1_frame = tk.Frame(search_frame)
 search1_frame.pack(fill=tk.X, pady=2)
 tk.Label(search1_frame, text="Key 1:").pack(side=tk.LEFT)
-search_key1_entry = tk.Entry(search1_frame, width=15)
+search_key1_entry = ttk.Combobox(search1_frame, width=13, values=[])
 search_key1_entry.pack(side=tk.LEFT, padx=5)
 tk.Label(search1_frame, text="Value 1:").pack(side=tk.LEFT)
 search_value1_entry = tk.Entry(search1_frame, width=15)
@@ -951,7 +1120,7 @@ search_value1_entry.pack(side=tk.LEFT, padx=5)
 search2_frame = tk.Frame(search_frame)
 search2_frame.pack(fill=tk.X, pady=2)
 tk.Label(search2_frame, text="Key 2:").pack(side=tk.LEFT)
-search_key2_entry = tk.Entry(search2_frame, width=15)
+search_key2_entry = ttk.Combobox(search2_frame, width=13, values=[])
 search_key2_entry.pack(side=tk.LEFT, padx=5)
 tk.Label(search2_frame, text="Value 2:").pack(side=tk.LEFT)
 search_value2_entry = tk.Entry(search2_frame, width=15)
@@ -961,7 +1130,7 @@ search_value2_entry.pack(side=tk.LEFT, padx=5)
 search3_frame = tk.Frame(search_frame)
 search3_frame.pack(fill=tk.X, pady=2)
 tk.Label(search3_frame, text="Key 3:").pack(side=tk.LEFT)
-search_key3_entry = tk.Entry(search3_frame, width=15)
+search_key3_entry = ttk.Combobox(search3_frame, width=13, values=[])
 search_key3_entry.pack(side=tk.LEFT, padx=5)
 tk.Label(search3_frame, text="Value 3:").pack(side=tk.LEFT)
 search_value3_entry = tk.Entry(search3_frame, width=15)
@@ -971,7 +1140,7 @@ search_value3_entry.pack(side=tk.LEFT, padx=5)
 search4_frame = tk.Frame(search_frame)
 search4_frame.pack(fill=tk.X, pady=2)
 tk.Label(search4_frame, text="Key 4:").pack(side=tk.LEFT)
-search_key4_entry = tk.Entry(search4_frame, width=15)
+search_key4_entry = ttk.Combobox(search4_frame, width=13, values=[])
 search_key4_entry.pack(side=tk.LEFT, padx=5)
 tk.Label(search4_frame, text="Value 4:").pack(side=tk.LEFT)
 search_value4_entry = tk.Entry(search4_frame, width=15)
@@ -992,7 +1161,7 @@ search_button = tk.Button(button_frame, text="Search", command=search_metadata)
 search_button.pack(side=tk.LEFT, padx=5)
 clear_search_button = tk.Button(button_frame, text="Clear Search", command=clear_search)
 clear_search_button.pack(side=tk.LEFT, padx=5)
-refresh_cache_button = tk.Button(button_frame, text="Refresh Cache", command=refresh_cache)
+refresh_cache_button = tk.Button(button_frame, text="Refresh Index", command=refresh_index)
 refresh_cache_button.pack(side=tk.LEFT, padx=5)
 
 # Progress display for search operations
@@ -1074,7 +1243,7 @@ update_metadata_label.pack(pady=(5, 0))
 update_metadata_key_frame = tk.Frame(metadata_frame)
 update_metadata_key_frame.pack(fill=tk.X, pady=2)
 tk.Label(update_metadata_key_frame, text="Key:").pack(side=tk.LEFT)
-update_metadata_key_entry = tk.Entry(update_metadata_key_frame, width=15)
+update_metadata_key_entry = ttk.Combobox(update_metadata_key_frame, width=15, values=[])
 update_metadata_key_entry.pack(side=tk.LEFT, padx=(2, 5))
 tk.Label(update_metadata_key_frame, text="New Value:").pack(side=tk.LEFT)
 update_metadata_value_entry = tk.Entry(update_metadata_key_frame, width=15)

@@ -12,9 +12,11 @@ import datetime
 import sounddevice as sd
 import os
 import io
+import json
 import subprocess
 from minio import Minio
 from minio.error import S3Error
+from minio.commonconfig import CopySource
 
 # Global variables
 recording = False
@@ -22,6 +24,7 @@ DURATION = 1  # Default duration (can be adjusted)
 OUTPUT_WAV_FILE = "recorded_audio.wav"
 OUTPUT_PARQUET_FILE = "recorded_data.parquet"
 BUCKET_NAME = "krak" # Replace with your bucket name
+INDEX_FILE_NAME = "search_index.json"
 parameter_entries = {}
 TEMP_DIR = "temp_files"
 loaded_df = None  # For storing loaded sample data
@@ -263,51 +266,188 @@ def upload_to_minio():
     if not os.path.exists(OUTPUT_PARQUET_FILE) or not os.path.exists(OUTPUT_WAV_FILE):
         messagebox.showwarning("Files Not Found", "Saving the files locally.")
         save_to_parquet()
-    try:
-        minio_client = create_minio_client()
 
-        # Upload parquet file
-        minio_client.fput_object(
-            BUCKET_NAME,
-            os.path.basename(OUTPUT_PARQUET_FILE),
-            OUTPUT_PARQUET_FILE
-        )
+    parquet_basename = os.path.basename(OUTPUT_PARQUET_FILE)
+    wav_basename = os.path.basename(OUTPUT_WAV_FILE)
 
-        # Upload wav file
-        minio_client.fput_object(
-            BUCKET_NAME,
-            os.path.basename(OUTPUT_WAV_FILE),
-            OUTPUT_WAV_FILE
-        )
+    def upload_worker():
+        parquet_backup_key = None
+        wav_backup_key = None
+        parquet_old_key = None
+        wav_old_key = None
 
-        print(f"Files uploaded to MinIO: {OUTPUT_PARQUET_FILE}, {OUTPUT_WAV_FILE}")
+        try:
+            # Disable upload button during operation
+            root.after(0, lambda: upload_button.config(text="Uploading...", state="disabled"))
 
-        # Apply metadata as tags to parquet file
-        metadata = get_all_metadata()
-        if metadata:
-            # Apply tags to parquet file only
-            parquet_success = sync_metadata_to_tags(os.path.basename(OUTPUT_PARQUET_FILE), metadata)
+            minio_client = create_minio_client()
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
-            if parquet_success:
-                print("Successfully applied tags to parquet file")
-            else:
-                print("Failed to apply tags to parquet file")
+            # Generate backup keys
+            parquet_backup_key = f"{os.path.splitext(parquet_basename)[0]}_backup_{timestamp}.parquet"
+            wav_backup_key = f"{os.path.splitext(wav_basename)[0]}_backup_{timestamp}.wav"
+            parquet_old_key = f"{os.path.splitext(parquet_basename)[0]}_old_{timestamp}.parquet"
+            wav_old_key = f"{os.path.splitext(wav_basename)[0]}_old_{timestamp}.wav"
 
-        messagebox.showinfo("Upload Complete", f"Files uploaded to MinIO")
+            # Step 1: Create backup uploads with verification
+            root.after(0, lambda: upload_button.config(text="Creating backups..."))
 
-        # Get the uploaded file base name (without extension)
-        uploaded_file_base = os.path.splitext(os.path.basename(OUTPUT_PARQUET_FILE))[0]
+            # Upload parquet backup
+            parquet_size = os.path.getsize(OUTPUT_PARQUET_FILE)
+            minio_client.fput_object(BUCKET_NAME, parquet_backup_key, OUTPUT_PARQUET_FILE)
+            parquet_backup_obj = minio_client.stat_object(BUCKET_NAME, parquet_backup_key)
+            if parquet_backup_obj.size != parquet_size:
+                raise Exception("Parquet backup upload verification failed - size mismatch")
 
-        # Refresh file list after upload
-        refresh_file_list()
+            # Upload wav backup
+            wav_size = os.path.getsize(OUTPUT_WAV_FILE)
+            minio_client.fput_object(BUCKET_NAME, wav_backup_key, OUTPUT_WAV_FILE)
+            wav_backup_obj = minio_client.stat_object(BUCKET_NAME, wav_backup_key)
+            if wav_backup_obj.size != wav_size:
+                raise Exception("WAV backup upload verification failed - size mismatch")
 
-        # Auto-select the uploaded file
-        select_uploaded_file(uploaded_file_base)
+            print(f"Backup uploads verified: {parquet_backup_key}, {wav_backup_key}")
 
-    except S3Error as e:
-        messagebox.showerror("Upload Failed", f"MinIO Error: {e}")
-    except Exception as e:
-        messagebox.showerror("Upload Failed", f"Error: {str(e)}")
+            # Step 2: Backup existing files if they exist
+            root.after(0, lambda: upload_button.config(text="Backing up existing..."))
+
+            # Check and backup existing parquet file
+            parquet_exists = False
+            try:
+                minio_client.stat_object(BUCKET_NAME, parquet_basename)
+                parquet_exists = True
+                minio_client.copy_object(
+                    BUCKET_NAME, parquet_old_key,
+                    CopySource(BUCKET_NAME, parquet_basename)
+                )
+                print(f"Existing parquet file backed up to: {parquet_old_key}")
+            except S3Error:
+                print("No existing parquet file to backup")
+
+            # Check and backup existing wav file
+            wav_exists = False
+            try:
+                minio_client.stat_object(BUCKET_NAME, wav_basename)
+                wav_exists = True
+                minio_client.copy_object(
+                    BUCKET_NAME, wav_old_key,
+                    CopySource(BUCKET_NAME, wav_basename)
+                )
+                print(f"Existing WAV file backed up to: {wav_old_key}")
+            except S3Error:
+                print("No existing WAV file to backup")
+
+            # Step 3: Atomic replacement using backup files
+            root.after(0, lambda: upload_button.config(text="Finalizing upload..."))
+
+            # Replace parquet file atomically
+            minio_client.copy_object(
+                BUCKET_NAME, parquet_basename,
+                CopySource(BUCKET_NAME, parquet_backup_key)
+            )
+
+            # Replace wav file atomically
+            minio_client.copy_object(
+                BUCKET_NAME, wav_basename,
+                CopySource(BUCKET_NAME, wav_backup_key)
+            )
+
+            # Step 4: Verify final files
+            final_parquet_obj = minio_client.stat_object(BUCKET_NAME, parquet_basename)
+            final_wav_obj = minio_client.stat_object(BUCKET_NAME, wav_basename)
+
+            if final_parquet_obj.size != parquet_size:
+                # Rollback parquet
+                if parquet_exists:
+                    minio_client.copy_object(
+                        BUCKET_NAME, parquet_basename,
+                        CopySource(BUCKET_NAME, parquet_old_key)
+                    )
+                raise Exception("Parquet final verification failed - rolled back")
+
+            if final_wav_obj.size != wav_size:
+                # Rollback wav
+                if wav_exists:
+                    minio_client.copy_object(
+                        BUCKET_NAME, wav_basename,
+                        CopySource(BUCKET_NAME, wav_old_key)
+                    )
+                raise Exception("WAV final verification failed - rolled back")
+
+            print(f"Final upload verification successful")
+
+            # Step 5: Cleanup backup files
+            try:
+                minio_client.remove_object(BUCKET_NAME, parquet_backup_key)
+                minio_client.remove_object(BUCKET_NAME, wav_backup_key)
+                if parquet_exists:
+                    minio_client.remove_object(BUCKET_NAME, parquet_old_key)
+                if wav_exists:
+                    minio_client.remove_object(BUCKET_NAME, wav_old_key)
+                print("Cleanup completed successfully")
+            except Exception as cleanup_error:
+                print(f"Warning: Cleanup failed but upload was successful: {cleanup_error}")
+
+            # Step 6: Update search index
+            def success_update():
+                upload_button.config(text="Upload to MinIO", state="normal")
+
+                # Update search index with metadata
+                metadata = get_all_metadata()
+                if metadata and os.path.exists(OUTPUT_PARQUET_FILE):
+                    try:
+                        df = pd.read_parquet(OUTPUT_PARQUET_FILE)
+                        update_search_index_on_server(parquet_basename, metadata, df)
+                    except Exception as e:
+                        print(f"Warning: Search index update failed: {e}")
+
+                messagebox.showinfo("Upload Complete",
+                                  f"Files uploaded to MinIO safely!\n\n"
+                                  f"Parquet: {parquet_basename}\n"
+                                  f"WAV: {wav_basename}")
+
+                # Get the uploaded file base name (without extension)
+                uploaded_file_base = os.path.splitext(parquet_basename)[0]
+
+                # Refresh file list after upload
+                refresh_file_list()
+
+                # Auto-select the uploaded file
+                select_uploaded_file(uploaded_file_base)
+
+            root.after(0, success_update)
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Upload error: {error_msg}")
+
+            # Cleanup on error
+            cleanup_keys = []
+            if parquet_backup_key:
+                cleanup_keys.append(parquet_backup_key)
+            if wav_backup_key:
+                cleanup_keys.append(wav_backup_key)
+            if parquet_old_key:
+                cleanup_keys.append(parquet_old_key)
+            if wav_old_key:
+                cleanup_keys.append(wav_old_key)
+
+            for key in cleanup_keys:
+                try:
+                    minio_client.remove_object(BUCKET_NAME, key)
+                except:
+                    pass
+
+            def error_update():
+                upload_button.config(text="Upload to MinIO", state="normal")
+                messagebox.showerror("Upload Failed",
+                                   f"Failed to upload files safely: {error_msg}\n\n"
+                                   f"No changes were made to the server.")
+
+            root.after(0, error_update)
+
+    # Run upload in separate thread
+    threading.Thread(target=upload_worker, daemon=True).start()
 
 
 def start_recording():
@@ -461,29 +601,102 @@ def create_minio_client():
         region=os.getenv("MINIO_REGION", "us-east-1")  # Default region
     )
 
-def sync_metadata_to_tags(object_name, metadata_dict):
-    """Sync metadata dictionary to MinIO object tags"""
+
+def update_search_index_on_server(parquet_filename, metadata_dict, dataframe):
+    """
+    Update the search index on the server with new metadata for an uploaded file
+
+    Args:
+        parquet_filename: Full filename (with .parquet extension)
+        metadata_dict: Dictionary of metadata
+        dataframe: The pandas DataFrame for file info
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
         minio_client = create_minio_client()
 
-        # Convert metadata to tags format (MinIO tags are key-value pairs)
-        tags = {}
-        for key, value in metadata_dict.items():
-            # MinIO tag keys and values must be strings, and have length restrictions
-            tag_key = str(key).replace(' ', '_')[:128]  # Replace spaces and limit length
-            tag_value = str(value)[:256]  # Limit tag value length
-            tags[tag_key] = tag_value
+        # Download existing index or create new one
+        try:
+            response = minio_client.get_object(BUCKET_NAME, INDEX_FILE_NAME)
+            index_data = json.loads(response.read().decode('utf-8'))
+        except S3Error as e:
+            if "NoSuchKey" in str(e):
+                # Create new index if it doesn't exist
+                index_data = {
+                    "index_info": {
+                        "created_at": datetime.datetime.now().isoformat(),
+                        "total_files": 0,
+                        "index_version": "1.0"
+                    },
+                    "files": {}
+                }
+            else:
+                raise e
 
-        # Apply tags to the object
-        minio_client.set_object_tags(BUCKET_NAME, object_name, tags)
-        print(f"Applied {len(tags)} tags to {object_name}")
+        # Get file statistics
+        try:
+            stat = minio_client.stat_object(BUCKET_NAME, parquet_filename)
+            file_info = {
+                'filename': parquet_filename,
+                'size_bytes': stat.size,
+                'last_modified': stat.last_modified.isoformat() if stat.last_modified else None,
+                'rows': len(dataframe),
+                'columns': len(dataframe.columns),
+                'column_names': list(dataframe.columns)
+            }
+        except Exception as file_error:
+            print(f"Warning: Could not get file stats: {file_error}")
+            file_info = {
+                'filename': parquet_filename,
+                'size_bytes': 'Unknown',
+                'last_modified': datetime.datetime.now().isoformat(),
+                'rows': len(dataframe) if dataframe is not None else 'Unknown',
+                'columns': len(dataframe.columns) if dataframe is not None else 'Unknown',
+                'column_names': list(dataframe.columns) if dataframe is not None else 'Unknown'
+            }
+
+        # Prepare the file metadata
+        file_metadata = dict(metadata_dict) if metadata_dict else {}
+        file_metadata['_file_info'] = file_info
+
+        # Update the index
+        index_data['files'][parquet_filename] = file_metadata
+        index_data['index_info']['total_files'] = len(index_data['files'])
+        index_data['index_info']['last_updated'] = datetime.datetime.now().isoformat()
+
+        # Upload updated index
+        json_bytes = json.dumps(index_data, indent=2, ensure_ascii=False).encode('utf-8')
+        json_buffer = io.BytesIO(json_bytes)
+
+        minio_client.put_object(
+            BUCKET_NAME,
+            INDEX_FILE_NAME,
+            json_buffer,
+            len(json_bytes),
+            content_type='application/json'
+        )
+
+        print(f"Successfully updated search index for {parquet_filename}")
+
+        # Show success dialog
+        messagebox.showinfo("Search Index Updated",
+                           f"Successfully added {parquet_filename} to search index!\n\n"
+                           f"Total files in index: {index_data['index_info']['total_files']}")
         return True
-    except S3Error as e:
-        print(f"MinIO Error applying tags to {object_name}: {e}")
-        return False
+
     except Exception as e:
-        print(f"Failed to apply tags to {object_name}: {str(e)}")
+        error_msg = f"Failed to update search index: {str(e)}"
+        print(error_msg)
+
+        # Show error dialog
+        messagebox.showerror("Search Index Error",
+                            f"Could not update search index for {parquet_filename}.\n\n"
+                            f"Error: {str(e)}\n\n"
+                            f"The file was uploaded successfully, but won't be searchable until the index is updated.")
         return False
+
 
 def launch_editor():
     """Launch the krak_editor_gui.py application"""
