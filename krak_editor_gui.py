@@ -152,7 +152,7 @@ def update_search_index_on_server(filename, updated_metadata):
                 # Create new index if it doesn't exist
                 index_data = {
                     "index_info": {
-                        "created_at": datetime.now().isoformat(),
+                        "created_at": datetime.datetime.now().isoformat(),
                         "total_files": 0,
                         "index_version": "1.0"
                     },
@@ -177,7 +177,7 @@ def update_search_index_on_server(filename, updated_metadata):
             file_info = {
                 'filename': parquet_filename,
                 'size_bytes': 'Unknown',
-                'last_modified': datetime.now().isoformat(),
+                'last_modified': datetime.datetime.now().isoformat(),
                 'rows': 'Unknown',
                 'columns': 'Unknown',
                 'column_names': 'Unknown'
@@ -201,7 +201,7 @@ def update_search_index_on_server(filename, updated_metadata):
 
         # Update index info
         index_data['index_info']['total_files'] = len(index_data['files'])
-        index_data['index_info']['last_updated'] = datetime.now().isoformat()
+        index_data['index_info']['last_updated'] = datetime.datetime.now().isoformat()
 
         # Upload updated index
         json_bytes = json.dumps(index_data, indent=2, ensure_ascii=False).encode('utf-8')
@@ -320,6 +320,36 @@ def refresh_file_list(filtered_files=None):
 
     for file in files_to_show:
         file_listbox.insert(tk.END, file)
+
+def filter_files_by_name():
+    """Filter files by filename search term"""
+    search_term = filename_search_entry.get().strip().lower()
+
+    if not search_term:
+        refresh_file_list()
+        return
+
+    # Get all files from server
+    all_files = list_s3_files()
+
+    # Filter files that contain the search term
+    filtered_files = [file for file in all_files if search_term in file.lower()]
+
+    # Update the file list with filtered results
+    refresh_file_list(filtered_files)
+
+    # Update status
+    status_msg = f"Found {len(filtered_files)} files containing '{search_term}'"
+    if hasattr(search_progress_var, 'set'):
+        search_progress_var.set(status_msg)
+    print(status_msg)
+
+def clear_filename_search():
+    """Clear the filename search and show all files"""
+    filename_search_entry.delete(0, tk.END)
+    refresh_file_list()
+    if hasattr(search_progress_var, 'set'):
+        search_progress_var.set("Showing all files")
 
 def load_sample():
     try:
@@ -1175,6 +1205,17 @@ search_progress_label.pack(fill=tk.X, pady=(5, 0))
 file_list_frame = tk.LabelFrame(left_frame, text="Files on Server", padx=5, pady=5)
 file_list_frame.pack(fill=tk.X, pady=(5, 5))
 
+# Filename search
+filename_search_frame = tk.Frame(file_list_frame)
+filename_search_frame.pack(fill=tk.X, pady=(0, 5))
+tk.Label(filename_search_frame, text="Search filename:").pack(side=tk.LEFT)
+filename_search_entry = tk.Entry(filename_search_frame, width=25)
+filename_search_entry.pack(side=tk.LEFT, padx=5)
+filename_search_button = tk.Button(filename_search_frame, text="Filter", command=lambda: filter_files_by_name())
+filename_search_button.pack(side=tk.LEFT, padx=2)
+filename_clear_button = tk.Button(filename_search_frame, text="Clear", command=lambda: clear_filename_search())
+filename_clear_button.pack(side=tk.LEFT, padx=2)
+
 # File listbox with scrollbar
 listbox_frame = tk.Frame(file_list_frame)
 listbox_frame.pack(fill=tk.BOTH, expand=True)
@@ -1202,6 +1243,10 @@ file_listbox.bind("<Control-c>", lambda e: copy_selected_filename())
 file_listbox.bind("<Control-a>", lambda e: copy_all_visible_filenames())
 file_listbox.bind("<Return>", lambda e: load_sample())  # Enter key to load
 file_listbox.bind("<Double-Button-1>", lambda e: load_sample())  # Double-click to load
+
+# Bind Enter key to filename search
+filename_search_entry.bind("<Return>", lambda e: filter_files_by_name())
+filename_search_entry.bind("<KeyRelease>", lambda e: filter_files_by_name() if len(filename_search_entry.get()) >= 1 else refresh_file_list())
 
 # Load button
 load_button = tk.Button(file_list_frame, text="Load Selected File", command=load_sample)
