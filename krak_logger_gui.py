@@ -460,7 +460,6 @@ def play_recorded_audio():
             # Read the WAV file and play it
             sample_rate, audio_data = wav.read(OUTPUT_WAV_FILE)
             sd.play(audio_data, sample_rate)
-            messagebox.showinfo("Playing Audio", "Playing recorded audio...")
         else:
             messagebox.showwarning("No Audio", "No recorded audio file found. Please record audio first.")
     except Exception as e:
