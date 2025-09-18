@@ -453,6 +453,19 @@ def upload_to_minio():
     threading.Thread(target=upload_worker, daemon=True).start()
 
 
+def play_recorded_audio():
+    """Play the recorded audio file"""
+    try:
+        if os.path.exists(OUTPUT_WAV_FILE):
+            # Read the WAV file and play it
+            sample_rate, audio_data = wav.read(OUTPUT_WAV_FILE)
+            sd.play(audio_data, sample_rate)
+            messagebox.showinfo("Playing Audio", "Playing recorded audio...")
+        else:
+            messagebox.showwarning("No Audio", "No recorded audio file found. Please record audio first.")
+    except Exception as e:
+        messagebox.showerror("Playback Error", f"Failed to play audio: {str(e)}")
+
 def start_recording():
     if not recording:
         threading.Thread(target=record_data, daemon=True).start()
@@ -697,7 +710,9 @@ def update_search_index_on_server(parquet_filename, metadata_dict, dataframe):
 def launch_editor():
     """Launch the krak_editor_gui.py application"""
     try:
-        subprocess.Popen(["python", "krak_editor_gui.py"])
+        # Use sys.executable to get the current Python interpreter (venv-aware)
+        import sys
+        subprocess.Popen([sys.executable, "krak_editor_gui.py"])
     except Exception as e:
         messagebox.showerror("Launch Error", f"Failed to launch editor: {str(e)}")
 
@@ -800,6 +815,9 @@ recording_section.pack(anchor="e", fill=tk.X, pady=(10, 5))
 
 record_button = tk.Button(recording_section, text="Start Recording", command=start_recording)
 record_button.pack(anchor="e")
+
+play_button = tk.Button(recording_section, text="Play Audio", command=play_recorded_audio)
+play_button.pack(anchor="e")
 
 upload_button = tk.Button(recording_section, text="Upload to MinIO", command=upload_to_minio)
 upload_button.pack(anchor="e")
