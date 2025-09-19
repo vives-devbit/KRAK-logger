@@ -652,7 +652,9 @@ def launch_editor():
                     f"Make sure krak_editor.exe is in the same directory as krak_logger.exe")
         else:
             # Running as script - use Python interpreter
-            subprocess.Popen([sys.executable, "krak_editor_gui.py"])
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            editor_path = os.path.join(script_dir, "krak_editor_gui.py")
+            subprocess.Popen([sys.executable, editor_path])
             print("Editor launched successfully from script")
 
     except Exception as e:
