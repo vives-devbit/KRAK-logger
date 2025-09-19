@@ -35,8 +35,36 @@ loaded_excel_metadata = {}  # For storing currently loaded metadata from Excel
 sort_by = "time"  # Default sort by time
 sort_order = "desc"  # Default sort newest first
 
+# Smart .env path detection for both development and executable
+def find_env_file():
+    """Find .env file in multiple possible locations for development and executable compatibility"""
+    # Get the directory where the script/executable is located
+    if getattr(sys, 'frozen', False):
+        # Running as executable
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        # Running as script
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Try multiple locations in priority order
+    possible_paths = [
+        os.path.join(exe_dir, '.env'),           # Same directory as exe/script
+        os.path.join(os.getcwd(), '.env'),       # Current working directory
+        '.env'                                   # Relative to current dir (fallback)
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            print(f"Found .env file at: {path}")
+            return path
+
+    print("No .env file found, using default environment variables")
+    return '.env'  # Fallback for dotenv.load_dotenv()
+
 # IP of Lan-XI
-dotenv.load_dotenv()
+import sys  # Add sys import for executable detection
+env_path = find_env_file()
+dotenv.load_dotenv(env_path)
 ip = os.getenv("BKDAQ_IP")
 Lanxi = LanXI(ip)
 Lanxi.setup_stream()
@@ -274,124 +302,37 @@ def upload_to_minio():
     wav_basename = os.path.basename(OUTPUT_WAV_FILE)
 
     def upload_worker():
-        parquet_backup_key = None
-        wav_backup_key = None
-        parquet_old_key = None
-        wav_old_key = None
-
         try:
             # Disable upload button during operation
             root.after(0, lambda: upload_button.config(text="Uploading...", state="disabled"))
 
             minio_client = create_minio_client()
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
-            # Generate backup keys
-            parquet_backup_key = f"{os.path.splitext(parquet_basename)[0]}_backup_{timestamp}.parquet"
-            wav_backup_key = f"{os.path.splitext(wav_basename)[0]}_backup_{timestamp}.wav"
-            parquet_old_key = f"{os.path.splitext(parquet_basename)[0]}_old_{timestamp}.parquet"
-            wav_old_key = f"{os.path.splitext(wav_basename)[0]}_old_{timestamp}.wav"
-
-            # Step 1: Create backup uploads with verification
-            root.after(0, lambda: upload_button.config(text="Creating backups..."))
-
-            # Upload parquet backup
+            # Get file sizes for verification
             parquet_size = os.path.getsize(OUTPUT_PARQUET_FILE)
-            minio_client.fput_object(BUCKET_NAME, parquet_backup_key, OUTPUT_PARQUET_FILE)
-            parquet_backup_obj = minio_client.stat_object(BUCKET_NAME, parquet_backup_key)
-            if parquet_backup_obj.size != parquet_size:
-                raise Exception("Parquet backup upload verification failed - size mismatch")
-
-            # Upload wav backup
             wav_size = os.path.getsize(OUTPUT_WAV_FILE)
-            minio_client.fput_object(BUCKET_NAME, wav_backup_key, OUTPUT_WAV_FILE)
-            wav_backup_obj = minio_client.stat_object(BUCKET_NAME, wav_backup_key)
-            if wav_backup_obj.size != wav_size:
-                raise Exception("WAV backup upload verification failed - size mismatch")
 
-            print(f"Backup uploads verified: {parquet_backup_key}, {wav_backup_key}")
+            # Direct upload of files
+            root.after(0, lambda: upload_button.config(text="Uploading parquet..."))
+            minio_client.fput_object(BUCKET_NAME, parquet_basename, OUTPUT_PARQUET_FILE)
 
-            # Step 2: Backup existing files if they exist
-            root.after(0, lambda: upload_button.config(text="Backing up existing..."))
+            root.after(0, lambda: upload_button.config(text="Uploading WAV..."))
+            minio_client.fput_object(BUCKET_NAME, wav_basename, OUTPUT_WAV_FILE)
 
-            # Check and backup existing parquet file
-            parquet_exists = False
-            try:
-                minio_client.stat_object(BUCKET_NAME, parquet_basename)
-                parquet_exists = True
-                minio_client.copy_object(
-                    BUCKET_NAME, parquet_old_key,
-                    CopySource(BUCKET_NAME, parquet_basename)
-                )
-                print(f"Existing parquet file backed up to: {parquet_old_key}")
-            except S3Error:
-                print("No existing parquet file to backup")
-
-            # Check and backup existing wav file
-            wav_exists = False
-            try:
-                minio_client.stat_object(BUCKET_NAME, wav_basename)
-                wav_exists = True
-                minio_client.copy_object(
-                    BUCKET_NAME, wav_old_key,
-                    CopySource(BUCKET_NAME, wav_basename)
-                )
-                print(f"Existing WAV file backed up to: {wav_old_key}")
-            except S3Error:
-                print("No existing WAV file to backup")
-
-            # Step 3: Atomic replacement using backup files
-            root.after(0, lambda: upload_button.config(text="Finalizing upload..."))
-
-            # Replace parquet file atomically
-            minio_client.copy_object(
-                BUCKET_NAME, parquet_basename,
-                CopySource(BUCKET_NAME, parquet_backup_key)
-            )
-
-            # Replace wav file atomically
-            minio_client.copy_object(
-                BUCKET_NAME, wav_basename,
-                CopySource(BUCKET_NAME, wav_backup_key)
-            )
-
-            # Step 4: Verify final files
+            # Verify uploaded files
+            root.after(0, lambda: upload_button.config(text="Verifying upload..."))
             final_parquet_obj = minio_client.stat_object(BUCKET_NAME, parquet_basename)
             final_wav_obj = minio_client.stat_object(BUCKET_NAME, wav_basename)
 
             if final_parquet_obj.size != parquet_size:
-                # Rollback parquet
-                if parquet_exists:
-                    minio_client.copy_object(
-                        BUCKET_NAME, parquet_basename,
-                        CopySource(BUCKET_NAME, parquet_old_key)
-                    )
-                raise Exception("Parquet final verification failed - rolled back")
+                raise Exception("Parquet file verification failed - size mismatch")
 
             if final_wav_obj.size != wav_size:
-                # Rollback wav
-                if wav_exists:
-                    minio_client.copy_object(
-                        BUCKET_NAME, wav_basename,
-                        CopySource(BUCKET_NAME, wav_old_key)
-                    )
-                raise Exception("WAV final verification failed - rolled back")
+                raise Exception("WAV file verification failed - size mismatch")
 
-            print(f"Final upload verification successful")
+            print(f"Upload verification successful")
 
-            # Step 5: Cleanup backup files
-            try:
-                minio_client.remove_object(BUCKET_NAME, parquet_backup_key)
-                minio_client.remove_object(BUCKET_NAME, wav_backup_key)
-                if parquet_exists:
-                    minio_client.remove_object(BUCKET_NAME, parquet_old_key)
-                if wav_exists:
-                    minio_client.remove_object(BUCKET_NAME, wav_old_key)
-                print("Cleanup completed successfully")
-            except Exception as cleanup_error:
-                print(f"Warning: Cleanup failed but upload was successful: {cleanup_error}")
-
-            # Step 6: Update search index
+            # Update search index
             def success_update():
                 upload_button.config(text="Upload to MinIO", state="normal", bg="SystemButtonFace", fg="black")
 
@@ -405,7 +346,7 @@ def upload_to_minio():
                         print(f"Warning: Search index update failed: {e}")
 
                 messagebox.showinfo("Upload Complete",
-                                  f"Files uploaded to MinIO safely!\n\n"
+                                  f"Files uploaded to MinIO successfully!\n\n"
                                   f"Parquet: {parquet_basename}\n"
                                   f"WAV: {wav_basename}")
 
@@ -424,28 +365,10 @@ def upload_to_minio():
             error_msg = str(e)
             print(f"Upload error: {error_msg}")
 
-            # Cleanup on error
-            cleanup_keys = []
-            if parquet_backup_key:
-                cleanup_keys.append(parquet_backup_key)
-            if wav_backup_key:
-                cleanup_keys.append(wav_backup_key)
-            if parquet_old_key:
-                cleanup_keys.append(parquet_old_key)
-            if wav_old_key:
-                cleanup_keys.append(wav_old_key)
-
-            for key in cleanup_keys:
-                try:
-                    minio_client.remove_object(BUCKET_NAME, key)
-                except:
-                    pass
-
             def error_update():
                 upload_button.config(text="Upload to MinIO", state="normal")
                 messagebox.showerror("Upload Failed",
-                                   f"Failed to upload files safely: {error_msg}\n\n"
-                                   f"No changes were made to the server.")
+                                   f"Failed to upload files: {error_msg}")
 
             root.after(0, error_update)
 
@@ -588,7 +511,8 @@ def load_sample():
 
 def create_minio_client():
     """Create and return MinIO client"""
-    dotenv.load_dotenv()
+    env_path = find_env_file()
+    dotenv.load_dotenv(env_path)
     endpoint = os.getenv("MINIO_ENDPOINT")
 
     # Parse endpoint URL properly
@@ -707,11 +631,30 @@ def update_search_index_on_server(parquet_filename, metadata_dict, dataframe):
 
 
 def launch_editor():
-    """Launch the krak_editor_gui.py application"""
+    """Launch the KRAK Editor in a separate process"""
     try:
-        # Use sys.executable to get the current Python interpreter (venv-aware)
+        import subprocess
         import sys
-        subprocess.Popen([sys.executable, "krak_editor_gui.py"])
+        import os
+
+        # Check if we're running as an executable or as a script
+        if getattr(sys, 'frozen', False):
+            # Running as executable - look for krak_editor.exe in same directory
+            exe_dir = os.path.dirname(sys.executable)
+            editor_exe = os.path.join(exe_dir, "krak_editor.exe")
+
+            if os.path.exists(editor_exe):
+                subprocess.Popen([editor_exe], cwd=exe_dir)
+                print("Editor launched successfully from executable")
+            else:
+                messagebox.showerror("Editor Not Found",
+                    f"Editor executable not found at: {editor_exe}\n\n"
+                    f"Make sure krak_editor.exe is in the same directory as krak_logger.exe")
+        else:
+            # Running as script - use Python interpreter
+            subprocess.Popen([sys.executable, "krak_editor_gui.py"])
+            print("Editor launched successfully from script")
+
     except Exception as e:
         messagebox.showerror("Launch Error", f"Failed to launch editor: {str(e)}")
 

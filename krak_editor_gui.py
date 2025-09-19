@@ -37,9 +37,37 @@ current_file_delay = None  # Current file's learned delay
 delay_learning_active = False  # Whether we're learning delay for current file
 
 
+# Smart .env path detection for both development and executable
+def find_env_file():
+    """Find .env file in multiple possible locations for development and executable compatibility"""
+    import sys
+    # Get the directory where the script/executable is located
+    if getattr(sys, 'frozen', False):
+        # Running as executable
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        # Running as script
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Try multiple locations in priority order
+    possible_paths = [
+        os.path.join(exe_dir, '.env'),           # Same directory as exe/script
+        os.path.join(os.getcwd(), '.env'),       # Current working directory
+        '.env'                                   # Relative to current dir (fallback)
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            print(f"Found .env file at: {path}")
+            return path
+
+    print("No .env file found, using default environment variables")
+    return '.env'  # Fallback for dotenv.load_dotenv()
+
 def create_minio_client():
     """Create and return MinIO client"""
-    dotenv.load_dotenv()
+    env_path = find_env_file()
+    dotenv.load_dotenv(env_path)
     endpoint = os.getenv("MINIO_ENDPOINT")
 
     # Parse endpoint URL properly
@@ -553,68 +581,37 @@ def save_metadata_to_s3():
     original_df = loaded_df.copy()
     
     def save_worker():
-        backup_key = None
-        old_key = None
-        
         try:
             root.after(0, lambda: save_metadata_button.config(text="Saving data...", state="disabled"))
-            
+
             updated_df = original_df.copy()
             updated_df.attrs[metadata_key] = metadata_value
-            
+
             minio_client = create_minio_client()
-            
+
             original_key = f"{sample_name}.parquet"
-            backup_key = f"{sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            old_key = f"{sample_name}_old_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            
+
+            # Check if original file exists
             try:
                 minio_client.stat_object(BUCKET_NAME, original_key)
             except S3Error:
                 raise Exception(f"Original file {original_key} not found in MinIO")
-            
-            root.after(0, lambda: save_metadata_button.config(text="Creating backup..."))
+
+            # Create updated parquet data
+            root.after(0, lambda: save_metadata_button.config(text="Preparing data..."))
             parquet_buffer = io.BytesIO()
             updated_df.to_parquet(parquet_buffer, index=False)
             buffer_size = parquet_buffer.tell()
             parquet_buffer.seek(0)
-            
-            minio_client.put_object(BUCKET_NAME, backup_key, parquet_buffer, buffer_size)
-            
-            backup_obj = minio_client.stat_object(BUCKET_NAME, backup_key)
-            if backup_obj.size != buffer_size:
-                raise Exception("Backup file upload verification failed - size mismatch")
-            
-            root.after(0, lambda: save_metadata_button.config(text="Backing up original..."))
-            minio_client.copy_object(
-                BUCKET_NAME, old_key,
-                CopySource(BUCKET_NAME, original_key)
-            )
-            
-            minio_client.stat_object(BUCKET_NAME, old_key)
-            
-            root.after(0, lambda: save_metadata_button.config(text="Finalizing save..."))
-            minio_client.copy_object(
-                BUCKET_NAME, original_key,
-                CopySource(BUCKET_NAME, backup_key)
-            )
-            
+
+            # Upload updated file directly
+            root.after(0, lambda: save_metadata_button.config(text="Uploading changes..."))
+            minio_client.put_object(BUCKET_NAME, original_key, parquet_buffer, buffer_size)
+
+            # Verify upload
             final_obj = minio_client.stat_object(BUCKET_NAME, original_key)
             if final_obj.size != buffer_size:
-                try:
-                    minio_client.copy_object(
-                        BUCKET_NAME, original_key,
-                        CopySource(BUCKET_NAME, old_key)
-                    )
-                    raise Exception("Final file verification failed - rolled back to original")
-                except Exception as rollback_error:
-                    raise Exception(f"Final file verification failed and rollback failed: {rollback_error}")
-            
-            try:
-                minio_client.remove_object(BUCKET_NAME, backup_key)
-                minio_client.remove_object(BUCKET_NAME, old_key)
-            except Exception as cleanup_error:
-                print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
+                raise Exception("File upload verification failed - size mismatch")
 
             def success_update():
                 global loaded_df
@@ -625,7 +622,7 @@ def save_metadata_to_s3():
 
                 metadata_key_entry.delete(0, tk.END)
                 metadata_value_entry.delete(0, tk.END)
-                
+
                 save_metadata_button.config(text="Save Metadata to MinIO", state="normal")
 
                 # Update local search index if it exists
@@ -638,29 +635,17 @@ def save_metadata_to_s3():
                 except Exception as index_error:
                     print(f"Warning: Search index update failed: {index_error}")
 
-                messagebox.showinfo("Success", f"Metadata '{metadata_key}' added and saved to MinIO safely.")
-            
+                messagebox.showinfo("Success", f"Metadata '{metadata_key}' added and saved to MinIO successfully.")
+
             root.after(0, success_update)
-            
+
         except Exception as e:
             error_msg = str(e)
-            
-            if backup_key:
-                try:
-                    minio_client.remove_object(BUCKET_NAME, backup_key)
-                except:
-                    pass
-            
-            if old_key:
-                try:
-                    minio_client.remove_object(BUCKET_NAME, old_key)
-                except:
-                    pass
-            
+
             def error_update():
                 save_metadata_button.config(text="Save Metadata to MinIO", state="normal")
-                messagebox.showerror("Save Error", f"Failed to save metadata safely: {error_msg}")
-            
+                messagebox.showerror("Save Error", f"Failed to save metadata: {error_msg}")
+
             root.after(0, error_update)
     
     threading.Thread(target=save_worker, daemon=True).start()
@@ -698,68 +683,37 @@ def update_metadata_in_s3():
     old_value = str(loaded_df.attrs[key])
     
     def update_worker():
-        backup_key = None
-        old_key = None
-        
         try:
             root.after(0, lambda: update_metadata_button.config(text="Updating data...", state="disabled"))
-            
+
             updated_df = original_df.copy()
             updated_df.attrs[metadata_key] = metadata_value
-            
+
             minio_client = create_minio_client()
-            
+
             original_key = f"{sample_name}.parquet"
-            backup_key = f"{sample_name}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            old_key = f"{sample_name}_old_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-            
+
+            # Check if original file exists
             try:
                 minio_client.stat_object(BUCKET_NAME, original_key)
             except S3Error:
                 raise Exception(f"Original file {original_key} not found in MinIO")
-            
-            root.after(0, lambda: update_metadata_button.config(text="Creating backup..."))
+
+            # Create updated parquet data
+            root.after(0, lambda: update_metadata_button.config(text="Preparing data..."))
             parquet_buffer = io.BytesIO()
             updated_df.to_parquet(parquet_buffer, index=False)
             buffer_size = parquet_buffer.tell()
             parquet_buffer.seek(0)
-            
-            minio_client.put_object(BUCKET_NAME, backup_key, parquet_buffer, buffer_size)
-            
-            backup_obj = minio_client.stat_object(BUCKET_NAME, backup_key)
-            if backup_obj.size != buffer_size:
-                raise Exception("Backup file upload verification failed - size mismatch")
-            
-            root.after(0, lambda: update_metadata_button.config(text="Backing up original..."))
-            minio_client.copy_object(
-                BUCKET_NAME, old_key,
-                CopySource(BUCKET_NAME, original_key)
-            )
-            
-            minio_client.stat_object(BUCKET_NAME, old_key)
-            
-            root.after(0, lambda: update_metadata_button.config(text="Finalizing update..."))
-            minio_client.copy_object(
-                BUCKET_NAME, original_key,
-                CopySource(BUCKET_NAME, backup_key)
-            )
-            
+
+            # Upload updated file directly
+            root.after(0, lambda: update_metadata_button.config(text="Uploading changes..."))
+            minio_client.put_object(BUCKET_NAME, original_key, parquet_buffer, buffer_size)
+
+            # Verify upload
             final_obj = minio_client.stat_object(BUCKET_NAME, original_key)
             if final_obj.size != buffer_size:
-                try:
-                    minio_client.copy_object(
-                        BUCKET_NAME, original_key,
-                        CopySource(BUCKET_NAME, old_key)
-                    )
-                    raise Exception("Final file verification failed - rolled back to original")
-                except Exception as rollback_error:
-                    raise Exception(f"Final file verification failed and rollback failed: {rollback_error}")
-            
-            try:
-                minio_client.remove_object(BUCKET_NAME, backup_key)
-                minio_client.remove_object(BUCKET_NAME, old_key)
-            except Exception as cleanup_error:
-                print(f"Warning: Cleanup failed but data was saved successfully: {cleanup_error}")
+                raise Exception("File upload verification failed - size mismatch")
 
             def success_update():
                 global loaded_df
@@ -770,7 +724,7 @@ def update_metadata_in_s3():
 
                 update_metadata_key_entry.set('')
                 update_metadata_value_entry.delete(0, tk.END)
-                
+
                 update_metadata_button.config(text="Update Metadata", state="normal")
 
                 # Update local search index if it exists
@@ -783,29 +737,17 @@ def update_metadata_in_s3():
                 except Exception as index_error:
                     print(f"Warning: Search index update failed: {index_error}")
 
-                messagebox.showinfo("Success", f"Metadata '{metadata_key}' updated from '{old_value}' to '{metadata_value}' and saved to MinIO.")
-            
+                messagebox.showinfo("Success", f"Metadata '{metadata_key}' updated from '{old_value}' to '{metadata_value}' and saved to MinIO successfully.")
+
             root.after(0, success_update)
-            
+
         except Exception as e:
             error_msg = str(e)
-            
-            if backup_key:
-                try:
-                    minio_client.remove_object(BUCKET_NAME, backup_key)
-                except:
-                    pass
-            
-            if old_key:
-                try:
-                    minio_client.remove_object(BUCKET_NAME, old_key)
-                except:
-                    pass
-            
+
             def error_update():
                 update_metadata_button.config(text="Update Metadata", state="normal")
-                messagebox.showerror("Update Error", f"Failed to update metadata safely: {error_msg}")
-            
+                messagebox.showerror("Update Error", f"Failed to update metadata: {error_msg}")
+
             root.after(0, error_update)
     
     threading.Thread(target=update_worker, daemon=True).start()
