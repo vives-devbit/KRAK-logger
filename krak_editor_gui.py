@@ -7,6 +7,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
 import sounddevice as sd
 import scipy.io.wavfile as wav
+import soundfile as sf
 import dotenv
 import datetime
 import os
@@ -17,6 +18,7 @@ import re
 from minio import Minio
 from minio.error import S3Error
 from minio.commonconfig import CopySource
+from signal_processor import SignalProcessor
 
 BUCKET_NAME = "krak"
 INDEX_FILE_NAME = "search_index.json"
@@ -405,7 +407,7 @@ def load_sample():
         current_sample_name = base_name
 
         current_file_var.set(f"Loaded: {base_name}")
-        playback_status_var.set(f"Ready to play: {base_name}.wav")
+        playback_status_var.set(f"Ready to play: {base_name}")
         status_var.set("Ready")
 
         # Update metadata key dropdowns with keys from the loaded file
@@ -499,13 +501,26 @@ def search_metadata():
 
         for filename, metadata in search_index.items():
             try:
-                matches = True
+                # Get search logic (AND or OR)
+                use_or_logic = search_logic_var.get() == "OR"
 
-                # Check regular key-value pairs
-                for key, value in search_criteria:
-                    if key not in metadata or str(metadata[key]).lower() != value.lower():
-                        matches = False
-                        break
+                if use_or_logic:
+                    # OR logic: at least one criteria must match
+                    matches = False
+                    for key, value in search_criteria:
+                        if key in metadata and value.lower() in str(metadata[key]).lower():
+                            matches = True
+                            break
+                    # If no search criteria, show all files
+                    if not search_criteria:
+                        matches = True
+                else:
+                    # AND logic: all criteria must match
+                    matches = True
+                    for key, value in search_criteria:
+                        if key not in metadata or value.lower() not in str(metadata[key]).lower():
+                            matches = False
+                            break
 
                 # Check date search if specified
                 if matches and date_search:
@@ -804,18 +819,94 @@ def show_context_menu(event):
         pass
 
 def update_plot(time_axis, data, title="Loaded Data"):
-    """Update the plot with new data"""
+    """Update the plot with new data and optional trimmed signal visualization"""
     global playback_line
     ax1.clear()
     ax2.clear()
-    ax1.plot(time_axis, data[0], 'b-', label="AI0")
-    ax2.plot(time_axis, data[1], 'r-', label="AI1")
+
+    # Plot original signals
+    ax1.plot(time_axis, data[0], 'b-', label="AI0 (Original)", alpha=0.7)
+
+    # Show DC compensated reference signal if trimmed view is enabled
+    if show_trimmed_var.get() and loaded_df is not None:
+        try:
+            current_config = get_current_signal_config()
+            processor = SignalProcessor(current_config)
+            reference_column = current_config['REFERENCE_COLUMN']
+
+            if reference_column in loaded_df.columns:
+                reference_signal = loaded_df[reference_column].values.astype(np.float32)
+                dc_compensated_signal, dc_offset = processor.remove_dc_offset(reference_signal)
+                ax2.plot(time_axis, dc_compensated_signal, 'purple',
+                        label=f"AI1 (DC Compensated, offset: {dc_offset:.3f}V)", alpha=0.7)
+            else:
+                ax2.plot(time_axis, data[1], 'r-', label="AI1 (Reference)", alpha=0.7)
+        except:
+            # Fallback to original signal if DC compensation fails
+            ax2.plot(time_axis, data[1], 'r-', label="AI1 (Reference)", alpha=0.7)
+    else:
+        ax2.plot(time_axis, data[1], 'r-', label="AI1 (Reference)", alpha=0.7)
+
+    # Add threshold lines to reference signal (AI1) plot
+    try:
+        current_config = get_current_signal_config()
+        start_threshold = current_config['START_THRESHOLD']
+        stop_threshold = current_config['STOP_THRESHOLD']
+
+        ax2.axhline(y=start_threshold, color='green', linestyle='--', alpha=0.7,
+                   label=f'Start Threshold ({start_threshold:.2f})', linewidth=2)
+        ax2.axhline(y=stop_threshold, color='red', linestyle='--', alpha=0.7,
+                   label=f'Stop Threshold ({stop_threshold:.2f})', linewidth=2)
+    except:
+        pass  # Skip threshold lines if config not available yet
+
+    # Add trimmed signal visualization if enabled
+    try:
+        if show_trimmed_var.get() and loaded_df is not None:
+            current_config = get_current_signal_config()
+            processor = SignalProcessor(current_config)
+
+            acoustic_column = current_config['ACOUSTIC_COLUMN']
+            reference_column = current_config['REFERENCE_COLUMN']
+
+            if (acoustic_column in loaded_df.columns and reference_column in loaded_df.columns):
+                acoustic_signal = loaded_df[acoustic_column].values.astype(np.float32)
+                reference_signal = loaded_df[reference_column].values.astype(np.float32)
+
+                # Calculate trim window
+                trimmed_signal, start_idx, end_idx = processor.trim_by_threshold(acoustic_signal, reference_signal)
+
+                if len(trimmed_signal) > 0 and start_idx < end_idx:
+                    # Highlight trim region with background color
+                    start_time = start_idx / current_config['SAMPLING_RATE']
+                    end_time = end_idx / current_config['SAMPLING_RATE']
+
+                    ax1.axvspan(start_time, end_time, color='orange', alpha=0.3,
+                              label=f'Trim Window ({end_time-start_time:.2f}s)')
+                    ax2.axvspan(start_time, end_time, color='orange', alpha=0.3)
+
+                    # Plot trimmed signal overlay
+                    trim_time_axis = time_axis[start_idx:end_idx]
+                    ax1.plot(trim_time_axis, trimmed_signal, 'cyan', linewidth=2,
+                           label="AI0 (Trimmed)", alpha=0.9)
+    except Exception as e:
+        print(f"Error adding trimmed signal visualization: {e}")
+
+    # Set labels and formatting
     ax1.set_xlabel("Time (s)")
     ax1.set_ylabel("AI0 Voltage (V)", color="b")
     ax2.set_ylabel("AI1 Voltage (V)", color="r")
     ax1.tick_params(axis="y", labelcolor="b")
     ax2.tick_params(axis="y", labelcolor="r")
     ax1.set_title(title)
+
+    # Add legends
+    ax1.legend(loc='upper right')
+    ax2.legend(loc='upper right')
+
+    # Add grid for better readability
+    ax1.grid(True, alpha=0.3)
+    ax2.grid(True, alpha=0.3)
 
     # Reset playback line reference since plot was cleared
     playback_line = None
@@ -973,8 +1064,8 @@ def load_learned_delays():
         print(f"Failed to load learned delays: {e}")
         learned_delays = {}
 
-def play_wav_file():
-    """Play the WAV file corresponding to the loaded parquet file"""
+def play_parquet_audio():
+    """Convert parquet signal to audio and play it"""
     try:
         # Check if a parquet file is loaded
         if loaded_df is None or not current_sample_name:
@@ -982,33 +1073,33 @@ def play_wav_file():
                                  "Please load a parquet file first before trying to play audio.")
             return
 
-        # Get the corresponding WAV file name
-        wav_filename = f"{current_sample_name}.wav"
+        # Get current signal processor configuration
+        current_config = get_current_signal_config()
 
-        # Download WAV file from MinIO to a temporary location
-        minio_client = create_minio_client()
+        # Create signal processor
+        processor = SignalProcessor(current_config)
 
-        # Check if WAV file exists in MinIO
-        try:
-            minio_client.stat_object(BUCKET_NAME, wav_filename)
-        except S3Error:
-            messagebox.showerror("WAV File Not Found",
-                                f"No WAV file found for '{current_sample_name}'.\n\n"
-                                f"Looking for: {wav_filename}")
+        # Get acoustic signal from loaded parquet data
+        acoustic_column = current_config['ACOUSTIC_COLUMN']
+        if acoustic_column not in loaded_df.columns:
+            messagebox.showerror("Column Error",
+                               f"Acoustic column '{acoustic_column}' not found in loaded data.\n"
+                               f"Available columns: {list(loaded_df.columns)}")
             return
 
-        # Download WAV file to temporary location
-        import tempfile
-        temp_wav_path = os.path.join(tempfile.gettempdir(), f"temp_{wav_filename}")
+        acoustic_signal = loaded_df[acoustic_column].values.astype(np.float32)
 
-        minio_client.fget_object(BUCKET_NAME, wav_filename, temp_wav_path)
-
-        # Load and play the WAV file
-        rate, data = wav.read(temp_wav_path)
+        # Prepare audio signal directly for sounddevice
+        # Normalize signal for audio playback
+        audio_signal = acoustic_signal.copy().astype(np.float32)
+        max_val = np.max(np.abs(audio_signal))
+        if max_val > 0:
+            audio_signal = audio_signal / max_val * 0.8  # Scale to 80% to avoid clipping
 
         # Calculate audio duration
         global audio_duration, playback_active, playback_start_time, current_file_delay, delay_learning_active
-        audio_duration = len(data) / rate
+        sampling_rate = current_config['SAMPLING_RATE']
+        audio_duration = len(acoustic_signal) / sampling_rate
 
         # Check if we have a learned delay for this file
         if current_sample_name in learned_delays:
@@ -1021,29 +1112,20 @@ def play_wav_file():
             print(f"Learning delay for {current_sample_name} during this playback")
 
         # Configure audio settings for better performance
-        # Use lower latency and larger buffer size for smoother playback
         sd.default.latency = 'low'
-        sd.default.blocksize = 1024  # Smaller block size for lower latency
+        sd.default.blocksize = 1024
 
         # Start playback line tracking
         playback_active = True
         import time
         playback_start_time = time.time()
 
-        # Play audio with optimized settings
-        sd.play(data, rate, blocking=False)
+        # Play audio directly with sounddevice (no temp file needed)
+        sd.play(audio_signal, sampling_rate, blocking=False)
 
         # Start updating playback line
         update_playback_line()
 
-        # Clean up temporary file
-        try:
-            os.remove(temp_wav_path)
-        except:
-            pass  # Ignore cleanup errors
-
-    except S3Error as e:
-        messagebox.showerror("MinIO Error", f"Failed to access WAV file: {e}")
     except Exception as e:
         messagebox.showerror("Playback Error", f"Failed to play audio: {str(e)}")
 
@@ -1117,6 +1199,16 @@ search_key4_entry.pack(side=tk.LEFT, padx=5)
 tk.Label(search4_frame, text="Value 4:").pack(side=tk.LEFT)
 search_value4_entry = tk.Entry(search4_frame, width=15)
 search_value4_entry.pack(side=tk.LEFT, padx=5)
+
+# Search logic selector
+logic_frame = tk.Frame(search_frame)
+logic_frame.pack(fill=tk.X, pady=5)
+tk.Label(logic_frame, text="Search Logic:").pack(side=tk.LEFT)
+search_logic_var = tk.StringVar(value="AND")
+and_radio = tk.Radiobutton(logic_frame, text="AND (all must match)", variable=search_logic_var, value="AND")
+and_radio.pack(side=tk.LEFT, padx=5)
+or_radio = tk.Radiobutton(logic_frame, text="OR (any can match)", variable=search_logic_var, value="OR")
+or_radio.pack(side=tk.LEFT, padx=5)
 
 # Date search
 date_search_frame = tk.Frame(search_frame)
@@ -1248,8 +1340,8 @@ playback_button_frame = tk.Frame(playback_frame)
 playback_button_frame.pack(pady=10)
 
 # Play button
-play_button = tk.Button(playback_button_frame, text="Play WAV File",
-                       command=play_wav_file, bg='lightgreen', width=12)
+play_button = tk.Button(playback_button_frame, text="Play Audio",
+                       command=play_parquet_audio, bg='lightgreen', width=12)
 play_button.pack(side=tk.LEFT, padx=5)
 
 # Stop button
@@ -1295,6 +1387,269 @@ playback_status_var.set("Load a file to enable playback")
 playback_status_label = tk.Label(playback_frame, textvariable=playback_status_var,
                                 font=('TkDefaultFont', 9), fg='gray')
 playback_status_label.pack(pady=(0, 5))
+
+# Signal processing parameter controls
+signal_params_frame = tk.LabelFrame(center_frame, text="Signal Processing Parameters", padx=10, pady=5)
+signal_params_frame.pack(fill=tk.X, pady=(0, 10))
+
+# Create global variables for signal processing parameters
+signal_processor_config = {
+    'ACOUSTIC_COLUMN': 'AI0 (V)',
+    'REFERENCE_COLUMN': 'AI1 (V)',
+    'SAMPLING_RATE': 65536,
+    'START_THRESHOLD': 0.1,
+    'STOP_THRESHOLD': 0.4,
+    'HYSTERESIS': 0.2,
+    'EXTRA_TIME_SECONDS': 0.250,
+    'MIN_DURATION_BELOW_THRESHOLD': 0.25,
+    'REQUIRED_METADATA_FIELDS': ["Moisture", "Speed", "Orientation", "Distance"]
+}
+
+# First row - threshold controls
+threshold_frame = tk.Frame(signal_params_frame)
+threshold_frame.pack(fill=tk.X, pady=2)
+
+tk.Label(threshold_frame, text="Start Threshold:").pack(side=tk.LEFT, padx=(0, 5))
+def on_threshold_change(event=None):
+    """Update plot when threshold values change"""
+    if loaded_df is not None:
+        # Refresh the plot with current data to show updated threshold lines
+        time_axis = loaded_df["Time (s)"]
+        data = [loaded_df["AI0 (V)"], loaded_df["AI1 (V)"]]
+        update_plot(time_axis, data, title=current_sample_name or "Loaded Data")
+
+start_threshold_var = tk.DoubleVar(value=signal_processor_config['START_THRESHOLD'])
+start_threshold_scale = tk.Scale(threshold_frame, from_=0.0, to=2.0, resolution=0.01,
+                                orient=tk.HORIZONTAL, variable=start_threshold_var, length=150,
+                                command=on_threshold_change)
+start_threshold_scale.pack(side=tk.LEFT, padx=(0, 10))
+
+tk.Label(threshold_frame, text="Stop Threshold:").pack(side=tk.LEFT, padx=(0, 5))
+stop_threshold_var = tk.DoubleVar(value=signal_processor_config['STOP_THRESHOLD'])
+stop_threshold_scale = tk.Scale(threshold_frame, from_=0.0, to=2.0, resolution=0.01,
+                               orient=tk.HORIZONTAL, variable=stop_threshold_var, length=150,
+                               command=on_threshold_change)
+stop_threshold_scale.pack(side=tk.LEFT, padx=(0, 10))
+
+# Second row - additional parameters
+params_frame = tk.Frame(signal_params_frame)
+params_frame.pack(fill=tk.X, pady=2)
+
+tk.Label(params_frame, text="Hysteresis:").pack(side=tk.LEFT, padx=(0, 5))
+hysteresis_var = tk.DoubleVar(value=signal_processor_config['HYSTERESIS'])
+hysteresis_entry = tk.Entry(params_frame, textvariable=hysteresis_var, width=8)
+hysteresis_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+tk.Label(params_frame, text="Extra Time (s):").pack(side=tk.LEFT, padx=(0, 5))
+extra_time_var = tk.DoubleVar(value=signal_processor_config['EXTRA_TIME_SECONDS'])
+extra_time_entry = tk.Entry(params_frame, textvariable=extra_time_var, width=8)
+extra_time_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+tk.Label(params_frame, text="Min Duration (s):").pack(side=tk.LEFT, padx=(0, 5))
+min_duration_var = tk.DoubleVar(value=signal_processor_config['MIN_DURATION_BELOW_THRESHOLD'])
+min_duration_entry = tk.Entry(params_frame, textvariable=min_duration_var, width=8)
+min_duration_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+# Config loading row
+config_frame = tk.Frame(signal_params_frame)
+config_frame.pack(fill=tk.X, pady=5)
+
+tk.Label(config_frame, text="Load Config:").pack(side=tk.LEFT, padx=(0, 5))
+
+# Config dropdown
+config_var = tk.StringVar()
+config_dropdown = ttk.Combobox(config_frame, textvariable=config_var, width=25, state="readonly")
+config_dropdown.pack(side=tk.LEFT, padx=(0, 10))
+
+def load_configs_from_server():
+    """Load available configuration files from server"""
+    try:
+        minio_client = create_minio_client()
+        config_objects = minio_client.list_objects(
+            BUCKET_NAME,
+            prefix="configs/",
+            recursive=True
+        )
+        config_files = [
+            obj.object_name.replace("configs/", "")
+            for obj in config_objects
+            if obj.object_name.endswith('.json')
+        ]
+        config_dropdown['values'] = config_files
+        if config_files:
+            return config_files
+        else:
+            messagebox.showinfo("No Configs", "No configuration files found on server.")
+            return []
+    except Exception as e:
+        messagebox.showerror("Config Error", f"Failed to load configs from server: {str(e)}")
+        return []
+
+def apply_config_to_gui(config_data):
+    """Apply loaded configuration to GUI controls"""
+    try:
+        # Remove metadata fields before applying
+        config_to_apply = {k: v for k, v in config_data.items() if not k.startswith('_')}
+
+        # Update GUI controls
+        if 'START_THRESHOLD' in config_to_apply:
+            start_threshold_var.set(config_to_apply['START_THRESHOLD'])
+        if 'STOP_THRESHOLD' in config_to_apply:
+            stop_threshold_var.set(config_to_apply['STOP_THRESHOLD'])
+        if 'HYSTERESIS' in config_to_apply:
+            hysteresis_var.set(config_to_apply['HYSTERESIS'])
+        if 'EXTRA_TIME_SECONDS' in config_to_apply:
+            extra_time_var.set(config_to_apply['EXTRA_TIME_SECONDS'])
+        if 'MIN_DURATION_BELOW_THRESHOLD' in config_to_apply:
+            min_duration_var.set(config_to_apply['MIN_DURATION_BELOW_THRESHOLD'])
+
+        # Update the global config with loaded values
+        signal_processor_config.update(config_to_apply)
+
+        # Update status label
+        config_name = config_var.get()
+        config_status_var.set(f"Loaded: {config_name}")
+
+        timestamp = config_data.get('_saved_timestamp', 'Unknown')
+        messagebox.showinfo("Config Loaded",
+                           f"Configuration applied successfully!\n"
+                           f"Saved: {timestamp}")
+    except Exception as e:
+        messagebox.showerror("Config Error", f"Failed to apply configuration: {str(e)}")
+
+def load_selected_config():
+    """Load the selected configuration from server"""
+    selected_config = config_var.get()
+    if not selected_config:
+        messagebox.showwarning("No Selection", "Please select a configuration file.")
+        return
+
+    try:
+        minio_client = create_minio_client()
+        object_name = f"configs/{selected_config}"
+        response = minio_client.get_object(BUCKET_NAME, object_name)
+        config_data = json.loads(response.read().decode('utf-8'))
+
+        apply_config_to_gui(config_data)
+
+    except Exception as e:
+        messagebox.showerror("Config Error", f"Failed to load configuration: {str(e)}")
+
+# Refresh configs button
+refresh_configs_button = tk.Button(config_frame, text="Refresh",
+                                  command=load_configs_from_server, width=8)
+refresh_configs_button.pack(side=tk.LEFT, padx=(0, 5))
+
+# Load config button
+load_config_button = tk.Button(config_frame, text="Load Config",
+                              command=load_selected_config, width=10)
+load_config_button.pack(side=tk.LEFT, padx=(0, 10))
+
+# Config status label
+config_status_var = tk.StringVar()
+config_status_var.set("No config loaded")
+config_status_label = tk.Label(config_frame, textvariable=config_status_var,
+                              font=('TkDefaultFont', 8), fg='blue')
+config_status_label.pack(side=tk.LEFT, padx=(0, 10))
+
+# Third row - control buttons
+controls_frame = tk.Frame(signal_params_frame)
+controls_frame.pack(fill=tk.X, pady=5)
+
+# Show trimmed signal toggle
+show_trimmed_var = tk.BooleanVar()
+
+def on_show_trimmed_toggle():
+    """Update plot when show trimmed signal is toggled"""
+    if loaded_df is not None:
+        # Refresh the plot with current data
+        time_axis = loaded_df["Time (s)"]
+        data = [loaded_df["AI0 (V)"], loaded_df["AI1 (V)"]]
+        update_plot(time_axis, data, title=current_sample_name or "Loaded Data")
+
+show_trimmed_check = tk.Checkbutton(controls_frame, text="Show Trimmed Signal",
+                                   variable=show_trimmed_var, command=on_show_trimmed_toggle)
+show_trimmed_check.pack(side=tk.LEFT, padx=(0, 10))
+
+# Play trimmed audio button
+def play_trimmed_audio():
+    """Play the trimmed version of the loaded signal"""
+    try:
+        if loaded_df is None or not current_sample_name:
+            messagebox.showwarning("No File Loaded", "Please load a parquet file first.")
+            return
+
+        # Get current signal processing parameters
+        current_config = get_current_signal_config()
+        processor = SignalProcessor(current_config)
+
+        # Get signals
+        acoustic_column = current_config['ACOUSTIC_COLUMN']
+        reference_column = current_config['REFERENCE_COLUMN']
+
+        if acoustic_column not in loaded_df.columns or reference_column not in loaded_df.columns:
+            messagebox.showerror("Column Error",
+                               f"Required columns not found. Available: {list(loaded_df.columns)}")
+            return
+
+        acoustic_signal = loaded_df[acoustic_column].values.astype(np.float32)
+        reference_signal = loaded_df[reference_column].values.astype(np.float32)
+
+        # Trim the signal
+        trimmed_signal, start_idx, end_idx = processor.trim_by_threshold(acoustic_signal, reference_signal)
+
+        if len(trimmed_signal) == 0:
+            messagebox.showwarning("No Signal", "No signal found above threshold - nothing to play.")
+            return
+
+        # Prepare trimmed signal for audio playback
+        audio_signal = trimmed_signal.copy().astype(np.float32)
+        max_val = np.max(np.abs(audio_signal))
+        if max_val > 0:
+            audio_signal = audio_signal / max_val * 0.8  # Scale to 80% to avoid clipping
+
+        # Play using sounddevice directly
+        sampling_rate = current_config['SAMPLING_RATE']
+        sd.play(audio_signal, sampling_rate, blocking=False)
+
+        # Optional: Print info to console instead of dialog
+        duration = len(trimmed_signal) / current_config['SAMPLING_RATE']
+        print(f"Playing trimmed signal: {duration:.2f} seconds (samples {start_idx} to {end_idx})")
+
+    except Exception as e:
+        messagebox.showerror("Playback Error", f"Failed to play trimmed audio: {str(e)}")
+
+play_trimmed_button = tk.Button(controls_frame, text="Play Trimmed",
+                               command=play_trimmed_audio, bg='lightblue', width=12)
+play_trimmed_button.pack(side=tk.LEFT, padx=(0, 10))
+
+# Reset to defaults button
+def reset_signal_params():
+    """Reset signal processing parameters to defaults"""
+    start_threshold_var.set(0.1)
+    stop_threshold_var.set(0.4)
+    hysteresis_var.set(0.2)
+    extra_time_var.set(0.250)
+    min_duration_var.set(0.25)
+    show_trimmed_var.set(False)
+    config_status_var.set("Using defaults")
+
+reset_button = tk.Button(controls_frame, text="Reset", command=reset_signal_params, width=8)
+reset_button.pack(side=tk.LEFT, padx=(0, 10))
+
+def get_current_signal_config():
+    """Get current signal processing configuration from GUI"""
+    return {
+        'ACOUSTIC_COLUMN': signal_processor_config['ACOUSTIC_COLUMN'],
+        'REFERENCE_COLUMN': signal_processor_config['REFERENCE_COLUMN'],
+        'SAMPLING_RATE': signal_processor_config['SAMPLING_RATE'],
+        'START_THRESHOLD': start_threshold_var.get(),
+        'STOP_THRESHOLD': stop_threshold_var.get(),
+        'HYSTERESIS': hysteresis_var.get(),
+        'EXTRA_TIME_SECONDS': extra_time_var.get(),
+        'MIN_DURATION_BELOW_THRESHOLD': min_duration_var.get(),
+        'REQUIRED_METADATA_FIELDS': signal_processor_config['REQUIRED_METADATA_FIELDS']
+    }
 
 # Keep status_var and progress_var for compatibility but don't display them
 status_var = tk.StringVar()
@@ -1356,5 +1711,34 @@ def on_closing():
 
 # Bind the cleanup function to window close event
 root.protocol("WM_DELETE_WINDOW", on_closing)
+
+# Initialize application data at startup
+def initialize_at_startup():
+    """Initialize search index and config files at application startup"""
+    print("Initializing KRAK Editor...")
+
+    # Load search index
+    try:
+        print("Loading search index from server...")
+        load_search_index()
+        print("Search index loaded successfully")
+    except Exception as e:
+        print(f"Warning: Failed to load search index: {e}")
+
+    # Load available config files
+    try:
+        print("Loading available config files from server...")
+        config_files = load_configs_from_server()
+        if config_files:
+            print(f"Found {len(config_files)} config files on server")
+        else:
+            print("No config files found on server")
+    except Exception as e:
+        print(f"Warning: Failed to load config files: {e}")
+
+    print("KRAK Editor initialization complete")
+
+# Run startup initialization
+initialize_at_startup()
 
 root.mainloop()

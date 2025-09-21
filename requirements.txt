@@ -11,6 +11,7 @@ openpyxl>=3.0.0
 
 # Audio processing
 sounddevice>=0.4.0
+soundfile>=0.13.0
 
 # Object storage (S3-compatible)
 minio>=7.0.0
