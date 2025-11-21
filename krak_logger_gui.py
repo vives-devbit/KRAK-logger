@@ -251,7 +251,27 @@ def record_data():
 
     recording = True
 
-    time_axis, data = Lanxi.SampleChannels(DURATION)
+    try:
+        time_axis, data = Lanxi.SampleChannels(DURATION)
+    except ConnectionRefusedError as e:
+        recording = False
+        messagebox.showerror("Connection Error", 
+                           "Failed to connect to LAN-XI device.\n\n"
+                           "The device may be busy from a previous recording.\n"
+                           "Attempting to reset the connection...")
+        try:
+            Lanxi.reset_stream()
+            time_axis, data = Lanxi.SampleChannels(DURATION)
+        except Exception as retry_error:
+            messagebox.showerror("Connection Failed", 
+                               f"Could not establish connection after reset.\n\n"
+                               f"Error: {retry_error}\n\n"
+                               f"Try restarting the application or power cycle the LAN-XI device.")
+            return
+    except Exception as e:
+        recording = False
+        messagebox.showerror("Recording Error", f"An error occurred during recording:\n\n{e}")
+        return
 
     update_plot(time_axis, data)
 
