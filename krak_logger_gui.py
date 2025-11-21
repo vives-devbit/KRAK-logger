@@ -73,9 +73,15 @@ NUM_SAMPLES = SAMPLE_RATE * DURATION
 
 def select_excel_file():
     global excel_metadata_df, excel_file_path
+    # Start from user's home directory or Documents folder for easier navigation
+    initial_dir = os.path.expanduser("~")
+    if os.path.exists(os.path.join(initial_dir, "Documents")):
+        initial_dir = os.path.join(initial_dir, "Documents")
+
     file_path = filedialog.askopenfilename(
         title="Select Excel Metadata File",
-        filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
+        filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+        initialdir=initial_dir
     )
     if file_path:
         try:
