@@ -65,6 +65,12 @@ class LanXI:
             self.setup["channels"][1]["ccld"] = False
             self.setup["channels"][1]["range"] = "10 Vpeak"  # Set the correct range for force sensor
             self.setup["channels"][1]["filter"] = "DC" # Set filter to DC for force sensor
+        # Configure channel 3 (index 2) as accelerometer (HBK 4533-B-001)
+        if len(self.setup["channels"]) > 2:
+            self.setup["channels"][2]["enabled"] = True
+            self.setup["channels"][2]["ccld"] = True  # Enable CCLD for accelerometer
+            self.setup["channels"][2]["range"] = "10 Vpeak"  # Set the correct range
+            self.setup["channels"][2]["filter"] = "0.1 Hz"  # AC coupling with high-pass filter for accelerometer
         # Remove None channels
         # self.channels = list(filter(lambda x : x != None, self.channels))
         # remove disabled channels
@@ -96,16 +102,16 @@ class LanXI:
 
     def SampleChannels(self, duration):
         """
-        Sample both channels for the given duration (in seconds).
+        Sample all three channels for the given duration (in seconds).
         Returns:
             time_axis: np.ndarray of time values
-            data: np.ndarray shape (2, N) where N is the number of samples
+            data: np.ndarray shape (3, N) where N is the number of samples
         """
         if self.host is None:
             raise RuntimeError("No LAN-XI device configured. Cannot sample channels without hardware.")
         sample_rate = self.sample_rate
         num_samples = int(sample_rate * duration)
-        arrays = [[], []]  # For channel 1 and 2
+        arrays = [[], [], []]  # For channel 1, 2, and 3
         interpretations = [{},{},{},{},{},{}]
 
         import requests
@@ -130,7 +136,7 @@ class LanXI:
                         interpretations[interpretation.signal_id - 1][interpretation.descriptor_type] = interpretation.value
                 if package.header.message_type == OpenapiStream.Header.EMessageType.e_signal_data:
                     for signal in package.content.signals:
-                        if signal is not None and (signal.signal_id == 1 or signal.signal_id == 2):
+                        if signal is not None and (signal.signal_id == 1 or signal.signal_id == 2 or signal.signal_id == 3):
                             scale_factor = interpretations[signal.signal_id - 1].get(
                                 OpenapiStream.Interpretation.EDescriptorType.scale_factor, 1.0
                             )
@@ -146,11 +152,12 @@ class LanXI:
             s.close()
 
         # Truncate to the same length and to num_samples
-        min_len = min(len(arrays[0]), len(arrays[1]), num_samples)
+        min_len = min(len(arrays[0]), len(arrays[1]), len(arrays[2]), num_samples)
         ch1 = np.array(arrays[0][:min_len])
         ch2 = np.array(arrays[1][:min_len])
+        ch3 = np.array(arrays[2][:min_len])
         time_axis = np.linspace(0, min_len / sample_rate, min_len, endpoint=False)
-        data = np.vstack([ch1, ch2])
+        data = np.vstack([ch1, ch2, ch3])
         return time_axis, data
     
     def close_stream(self):

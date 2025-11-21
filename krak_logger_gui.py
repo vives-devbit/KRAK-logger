@@ -282,7 +282,8 @@ def save_to_parquet():
         df = pd.DataFrame({
             "Time (s)": recorded_time_axis,
             "AI0 (V)": recorded_data[0],
-            "AI1 (V)": recorded_data[1]
+            "AI1 (V)": recorded_data[1],
+            "AI2 (V)": recorded_data[2]
         })
 
         df.attrs.update(metadata)
@@ -398,14 +399,18 @@ def start_recording():
 def update_plot(time_axis, data, title="Recorded Data"):
     ax1.clear()
     ax2.clear()
+    ax3.clear()
     ax1.plot(time_axis, data[0], 'b-', label="AI0")
     ax2.plot(time_axis, data[1], 'r-', label="AI1")
-    ax1.set_xlabel("Time (s)")
+    ax3.plot(time_axis, data[2], 'g-', label="AI2")
     ax1.set_ylabel("AI0 Voltage (V)", color="b")
-    ax2.set_ylabel("AI1 Voltage (V)", color="r")
     ax1.tick_params(axis="y", labelcolor="b")
-    ax2.tick_params(axis="y", labelcolor="r")
     ax1.set_title(title)
+    ax2.set_ylabel("AI1 Voltage (V)", color="r")
+    ax2.tick_params(axis="y", labelcolor="r")
+    ax3.set_ylabel("AI2 Voltage (V)", color="g")
+    ax3.tick_params(axis="y", labelcolor="g")
+    ax3.set_xlabel("Time (s)")
     fig.canvas.draw()
 
 
@@ -490,7 +495,7 @@ def load_sample():
         response = minio_client.get_object(BUCKET_NAME, parquet_key)
         df = pd.read_parquet(io.BytesIO(response.read()))
 
-        update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"]], title=base_name)
+        update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"]], title=base_name)
         metadata_text.delete("1.0", tk.END)
         for key, val in df.attrs.items():
             metadata_text.insert(tk.END, f"{key}: {val}\n")
@@ -828,8 +833,8 @@ editor_button = tk.Button(file_section, text="Editor", command=launch_editor)
 editor_button.pack(anchor="e", pady=(10, 0))
 
 
-fig, ax1 = plt.subplots()
-ax2 = ax1.twinx()
+fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+fig.tight_layout(pad=3.0)
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
