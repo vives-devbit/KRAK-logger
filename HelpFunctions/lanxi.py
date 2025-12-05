@@ -65,10 +65,17 @@ class LanXI:
             self.setup["channels"][1]["ccld"] = False
             self.setup["channels"][1]["range"] = "10 Vpeak"  # Set the correct range for force sensor
             self.setup["channels"][1]["filter"] = "DC" # Set filter to DC for force sensor
-        # Configure channel 3 (index 2) as accelerometer (HBK 4533-B-001)
+        # Configure channel 3 (index 2) as accelerometer (HBK 4533-B-001) with TEDS
         if len(self.setup["channels"]) > 2:
+            # If TEDS was detected on channel 3, keep the transducer info
+            if self.channels[2] is not None:
+                self.setup["channels"][2]["transducer"] = self.channels[2]
+                self.setup["channels"][2]["ccld"] = self.channels[2]["requiresCcld"]
+            else:
+                # Fallback if no TEDS detected
+                self.setup["channels"][2]["ccld"] = True
+            # Always enable and set specific parameters for the accelerometer
             self.setup["channels"][2]["enabled"] = True
-            self.setup["channels"][2]["ccld"] = True  # Enable CCLD for accelerometer
             self.setup["channels"][2]["range"] = "10 Vpeak"  # Set the correct range
             self.setup["channels"][2]["filter"] = "0.1 Hz"  # AC coupling with high-pass filter for accelerometer
         # Remove None channels
