@@ -1,29 +1,29 @@
 # Core scientific computing packages
-numpy>=1.24.0
-pandas>=2.0.0
-matplotlib>=3.8.0
-scipy>=1.11.0
+numpy==2.2.6
+pandas==2.2.3
+matplotlib==3.10.0
+scipy==1.15.3
 
 # Data processing and serialization
-pyarrow>=15.0.0
-fastparquet>=2024.2.0
-openpyxl>=3.1.0
+pyarrow==19.0.0
+# fastparquet>=2024.2.0  # Not currently installed
+openpyxl==3.1.5
 
 # Audio processing
-sounddevice>=0.4.6
-soundfile>=0.12.1
+sounddevice==0.5.2
+soundfile==0.13.1
 
 # Object storage (S3-compatible)
-minio>=7.2.0
+minio==7.2.16
 
 # Configuration management
-python-dotenv>=1.0.0
+python-dotenv==1.1.0
 
 # HTTP requests
-requests>=2.31.0
+requests==2.32.3
 
 # Build tools and packaging
-setuptools>=68.0.0
+setuptools==72.1.0
 
 # Binary data parsing - Kaitai Struct (using local version in src/kaitaistruct)
 -e src/kaitaistruct
