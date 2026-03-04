@@ -288,8 +288,6 @@ def record_data():
     # Make upload button red to indicate data needs to be uploaded
     upload_button.config(bg="red", fg="white")
 
-    messagebox.showinfo("Recording Complete", "Recording finished and audio saved.")
-
 
 def save_to_parquet():
     if recorded_data is not None:
@@ -309,20 +307,19 @@ def save_to_parquet():
             "Time (s)": recorded_time_axis,
             "AI0 (V)": recorded_data[0],
             "AI1 (V)": recorded_data[1],
-            "AI2 (V)": recorded_data[2]
+            "AI2 (V)": recorded_data[2],
+            "AI3 (mV)": recorded_data[3] * 1000
         })
 
         df.attrs.update(metadata)
         df.to_parquet(OUTPUT_PARQUET_FILE, index=False)
         print(f"Data saved as {OUTPUT_PARQUET_FILE} with metadata")
-        messagebox.showinfo("Save Complete", f"Data saved as {OUTPUT_PARQUET_FILE}")
     else:
         messagebox.showwarning("No Data", "No recorded data to save.")
 
 def upload_to_minio():
     # check if file exists
     if not os.path.exists(OUTPUT_PARQUET_FILE) or not os.path.exists(OUTPUT_WAV_FILE):
-        messagebox.showwarning("Files Not Found", "Saving the files locally.")
         save_to_parquet()
 
     parquet_basename = os.path.basename(OUTPUT_PARQUET_FILE)
@@ -404,7 +401,7 @@ def upload_to_minio():
 
 
 def play_recorded_audio():
-    """Play the recorded audio file"""
+    """Play the recorded audio file from AI0"""
     try:
         if os.path.exists(OUTPUT_WAV_FILE):
             # Read the WAV file and play it
@@ -414,6 +411,32 @@ def play_recorded_audio():
             messagebox.showwarning("No Audio", "No recorded audio file found. Please record audio first.")
     except Exception as e:
         messagebox.showerror("Playback Error", f"Failed to play audio: {str(e)}")
+
+def play_ai2_audio():
+    """Play the recorded audio from AI2 (accelerometer channel)"""
+    try:
+        if recorded_data is not None and len(recorded_data) > 2:
+            # Convert AI2 data to audio format
+            max_voltage = 10
+            audio_data = (recorded_data[2] / max_voltage * 32767).astype(np.int16)
+            sd.play(audio_data, SAMPLE_RATE)
+        else:
+            messagebox.showwarning("No Audio", "No recorded data found. Please record audio first.")
+    except Exception as e:
+        messagebox.showerror("Playback Error", f"Failed to play AI2 audio: {str(e)}")
+
+def play_ai3_audio():
+    """Play the recorded audio from AI3 (HBK 4518 CCLD microphone channel)"""
+    try:
+        if recorded_data is not None and len(recorded_data) > 3:
+            # Convert AI3 data to audio format (1 Vpeak range for CCLD mic)
+            max_voltage = 1
+            audio_data = (recorded_data[3] / max_voltage * 32767).astype(np.int16)
+            sd.play(audio_data, SAMPLE_RATE)
+        else:
+            messagebox.showwarning("No Audio", "No recorded data found. Please record audio first.")
+    except Exception as e:
+        messagebox.showerror("Playback Error", f"Failed to play AI3 audio: {str(e)}")
 
 def start_recording():
     if not recording:
@@ -426,9 +449,11 @@ def update_plot(time_axis, data, title="Recorded Data"):
     ax1.clear()
     ax2.clear()
     ax3.clear()
+    ax4.clear()
     ax1.plot(time_axis, data[0], 'b-', label="AI0")
     ax2.plot(time_axis, data[1], 'r-', label="AI1")
     ax3.plot(time_axis, data[2], 'g-', label="AI2")
+    ax4.plot(time_axis, data[3] * 1000, 'm-', label="AI3")
     ax1.set_ylabel("AI0 Voltage (V)", color="b")
     ax1.tick_params(axis="y", labelcolor="b")
     ax1.set_title(title)
@@ -436,7 +461,9 @@ def update_plot(time_axis, data, title="Recorded Data"):
     ax2.tick_params(axis="y", labelcolor="r")
     ax3.set_ylabel("AI2 Voltage (V)", color="g")
     ax3.tick_params(axis="y", labelcolor="g")
-    ax3.set_xlabel("Time (s)")
+    ax4.set_ylabel("AI3 (mV)", color="m")
+    ax4.tick_params(axis="y", labelcolor="m")
+    ax4.set_xlabel("Time (s)")
     fig.canvas.draw()
 
 
@@ -521,7 +548,7 @@ def load_sample():
         response = minio_client.get_object(BUCKET_NAME, parquet_key)
         df = pd.read_parquet(io.BytesIO(response.read()))
 
-        update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"]], title=base_name)
+        update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"], df["AI3 (mV)"] / 1000], title=base_name)
         metadata_text.delete("1.0", tk.END)
         for key, val in df.attrs.items():
             metadata_text.insert(tk.END, f"{key}: {val}\n")
@@ -642,11 +669,6 @@ def update_search_index_on_server(parquet_filename, metadata_dict, dataframe):
         )
 
         print(f"Successfully updated search index for {parquet_filename}")
-
-        # Show success dialog
-        messagebox.showinfo("Search Index Updated",
-                           f"Successfully added {parquet_filename} to search index!\n\n"
-                           f"Total files in index: {index_data['index_info']['total_files']}")
         return True
 
     except Exception as e:
@@ -791,8 +813,14 @@ recording_section.pack(anchor="e", fill=tk.X, pady=(10, 5))
 record_button = tk.Button(recording_section, text="Start Recording", command=start_recording)
 record_button.pack(anchor="e")
 
-play_button = tk.Button(recording_section, text="Play Audio", command=play_recorded_audio)
+play_button = tk.Button(recording_section, text="Play AI0 Audio", command=play_recorded_audio)
 play_button.pack(anchor="e")
+
+play_ai2_button = tk.Button(recording_section, text="Play AI2 Audio", command=play_ai2_audio)
+play_ai2_button.pack(anchor="e")
+
+play_ai3_button = tk.Button(recording_section, text="Play AI3 Mic Audio", command=play_ai3_audio)
+play_ai3_button.pack(anchor="e")
 
 upload_button = tk.Button(recording_section, text="Upload to MinIO", command=upload_to_minio)
 upload_button.pack(anchor="e")
@@ -859,7 +887,7 @@ editor_button = tk.Button(file_section, text="Editor", command=launch_editor)
 editor_button.pack(anchor="e", pady=(10, 0))
 
 
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
 fig.tight_layout(pad=3.0)
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)

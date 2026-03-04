@@ -23,24 +23,47 @@ class LanXI:
         if self.host is None:
             print("Warning: Cannot setup stream - no LAN-XI device configured")
             return
-        # This setup is indentical to the one found in "Streaming.py", refer to this for more info.
-        # First, try to clean up any existing state
         import time
+        # Force device back to idle — each step in its own try so later steps always run
         print("Cleaning up any previous LAN-XI state...")
         try:
-            requests.put(self.host + "/rest/rec/measurements/stop", timeout=2)
-            time.sleep(0.5)
-            requests.put(self.host + "/rest/rec/finish", timeout=2)
-            time.sleep(0.5)
-            requests.put(self.host + "/rest/rec/close", timeout=2)
-            time.sleep(1)  # Give device time to fully close
-            print("Previous state cleaned up")
-        except Exception as e:
-            print(f"Cleanup note: {e}")  # Log but continue
-        
-        # Open recorder application
+            requests.put(self.host + "/rest/rec/measurements/stop", timeout=3)
+        except Exception:
+            pass
+        time.sleep(1)
+        try:
+            requests.put(self.host + "/rest/rec/finish", timeout=3)
+        except Exception:
+            pass
+        time.sleep(1)
+        try:
+            requests.put(self.host + "/rest/rec/close", timeout=3)
+        except Exception:
+            pass
+        time.sleep(2)  # Give device time to fully return to idle
+
+        # Open recorder application — retry once if device not ready yet
         print("Opening recorder application...")
-        requests.put(self.host + "/rest/rec/open")
+        r = requests.put(self.host + "/rest/rec/open", timeout=5)
+        if r.status_code not in (200, 204):
+            print(f"Open returned {r.status_code}, retrying cleanup...")
+            time.sleep(2)
+            try:
+                requests.put(self.host + "/rest/rec/measurements/stop", timeout=3)
+            except Exception:
+                pass
+            time.sleep(1)
+            try:
+                requests.put(self.host + "/rest/rec/finish", timeout=3)
+            except Exception:
+                pass
+            time.sleep(1)
+            try:
+                requests.put(self.host + "/rest/rec/close", timeout=3)
+            except Exception:
+                pass
+            time.sleep(2)
+            requests.put(self.host + "/rest/rec/open", timeout=5)
         # Get information about the device and configure 
         self.GetTeds()
         self.ConfigureStream()
@@ -82,6 +105,12 @@ class LanXI:
             self.setup["channels"][1]["ccld"] = False
             self.setup["channels"][1]["range"] = "10 Vpeak"  # Set the correct range for force sensor
             self.setup["channels"][1]["filter"] = "DC" # Set filter to DC for force sensor
+        # Configure channel 4 (index 3) as CCLD microphone input (HBK 4518)
+        # Only override if no TEDS detected on channel 4
+        if len(self.setup["channels"]) > 3 and self.channels[3] == None:
+            self.setup["channels"][3]["enabled"] = True
+            self.setup["channels"][3]["ccld"] = True       # CCLD mic requires constant current excitation
+            self.setup["channels"][3]["range"] = "1 Vpeak" # Appropriate for mic signal levels
         # Remove None channels
         # self.channels = list(filter(lambda x : x != None, self.channels))
         # remove disabled channels
@@ -150,16 +179,16 @@ class LanXI:
 
     def SampleChannels(self, duration):
         """
-        Sample all three channels for the given duration (in seconds).
+        Sample all four channels for the given duration (in seconds).
         Returns:
             time_axis: np.ndarray of time values
-            data: np.ndarray shape (3, N) where N is the number of samples
+            data: np.ndarray shape (4, N) where N is the number of samples
         """
         if self.host is None:
             raise RuntimeError("No LAN-XI device configured. Cannot sample channels without hardware.")
         sample_rate = self.sample_rate
         num_samples = int(sample_rate * duration)
-        arrays = [[], [], []]  # For channel 1, 2, and 3
+        arrays = [[], [], [], []]  # For channel 1, 2, 3, and 4
         interpretations = [{},{},{},{},{},{}]
 
         import requests
@@ -192,7 +221,7 @@ class LanXI:
                             interpretations[interpretation.signal_id - 1][interpretation.descriptor_type] = interpretation.value
                     if package.header.message_type == OpenapiStream.Header.EMessageType.e_signal_data:
                         for signal in package.content.signals:
-                            if signal is not None and (signal.signal_id == 1 or signal.signal_id == 2 or signal.signal_id == 3):
+                            if signal is not None and (signal.signal_id == 1 or signal.signal_id == 2 or signal.signal_id == 3 or signal.signal_id == 4):
                                 scale_factor = interpretations[signal.signal_id - 1].get(
                                     OpenapiStream.Interpretation.EDescriptorType.scale_factor, 1.0
                                 )
@@ -213,12 +242,13 @@ class LanXI:
             raise e
 
         # Truncate to the same length and to num_samples
-        min_len = min(len(arrays[0]), len(arrays[1]), len(arrays[2]), num_samples)
+        min_len = min(len(arrays[0]), len(arrays[1]), len(arrays[2]), len(arrays[3]), num_samples)
         ch1 = np.array(arrays[0][:min_len])
         ch2 = np.array(arrays[1][:min_len])
         ch3 = np.array(arrays[2][:min_len])
+        ch4 = np.array(arrays[3][:min_len])
         time_axis = np.linspace(0, min_len / sample_rate, min_len, endpoint=False)
-        data = np.vstack([ch1, ch2, ch3])
+        data = np.vstack([ch1, ch2, ch3, ch4])
         return time_axis, data
     
     def close_stream(self):

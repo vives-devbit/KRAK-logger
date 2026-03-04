@@ -1,0 +1,34 @@
+{
+    // Python interpreter settings - TEMPLATE FILE
+    // Copy this to settings.json and update the path for your user
+    //
+    // For user u0143459:
+    //   "python.defaultInterpreterPath": "${workspaceFolder}/.venv_u0143459/Scripts/python.exe",
+    //
+    // For user u0141579:
+    //   "python.defaultInterpreterPath": "${workspaceFolder}/.venv_u0141579/Scripts/python.exe",
+
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv_YOUR_USERNAME/Scripts/python.exe",
+
+    // Auto-activate the virtual environment in the terminal
+    "python.terminal.activateEnvironment": true,
+
+    // Linting and formatting settings
+    "python.analysis.typeCheckingMode": "basic",
+
+    // Test discovery
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": false,
+
+    // Additional settings for better Python development
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        ".venv_broken_backup": true
+    },
+
+    "files.watcherExclude": {
+        "**/.venv_*/**": true,
+        "**/temp_files/**": true
+    }
+}

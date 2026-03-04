@@ -1,0 +1,27 @@
+{
+    // Python interpreter settings
+    // Points to local venv (Python 3.13)
+    "python.defaultInterpreterPath": "C:\\Users\\FIP\\Documents\\KRAK-logger\\venv\\Scripts\\python.exe",
+
+    // Auto-activate the virtual environment in the terminal
+    "python.terminal.activateEnvironment": true,
+
+    // Linting and formatting settings
+    "python.analysis.typeCheckingMode": "basic",
+
+    // Test discovery
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": false,
+
+    // Additional settings for better Python development
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        ".venv_broken_backup": true
+    },
+
+    "files.watcherExclude": {
+        "**/.venv_*/**": true,
+        "**/temp_files/**": true
+    }
+}

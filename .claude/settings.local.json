@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(C:/KRAK-logger/.venv/Scripts/python.exe -m pip install:*)",
+      "Bash(\"/c/Users/u0143459/AppData/Local/Programs/Python/Python314/python.exe\" -m venv .venv)",
+      "Bash(.venv/Scripts/python.exe -m pip:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(.venv_u0143459/Scripts/python.exe:*)",
+      "Bash(\"/c/Users/u0141579/AppData/Local/Programs/Python/Python314/python.exe\" --version)",
+      "Bash(\"/c/Users/u0141579/AppData/Local/Programs/Python/Python314/python.exe\" -m venv .venv_u0143459)"
+    ]
+  }
+}
