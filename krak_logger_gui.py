@@ -17,6 +17,8 @@ import subprocess
 from minio import Minio
 from minio.error import S3Error
 from minio.commonconfig import CopySource
+import atexit
+import signal
 
 # Global variables
 recording = False
@@ -70,6 +72,10 @@ Lanxi = LanXI(ip)
 Lanxi.setup_stream()
 SAMPLE_RATE = Lanxi.sample_rate
 NUM_SAMPLES = SAMPLE_RATE * DURATION
+
+# Ensure LAN-XI is released even on crash or Ctrl+C
+atexit.register(Lanxi.close_stream)
+signal.signal(signal.SIGINT, lambda _s, _f: (Lanxi.close_stream(), sys.exit(0)))
 
 def select_excel_file():
     global excel_metadata_df, excel_file_path

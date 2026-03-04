@@ -259,5 +259,15 @@ class LanXI:
         if self.host is None:
             print("No LAN-XI device to close")
             return
-        requests.put(self.host + "/rest/rec/finish")
-        requests.put(self.host + "/rest/rec/close")
+        try:
+            requests.put(self.host + "/rest/rec/measurements/stop", timeout=3)
+        except Exception:
+            pass
+        try:
+            requests.put(self.host + "/rest/rec/finish", timeout=3)
+        except Exception:
+            pass
+        try:
+            requests.put(self.host + "/rest/rec/close", timeout=3)
+        except Exception:
+            pass
