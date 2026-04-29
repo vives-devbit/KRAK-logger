@@ -116,11 +116,11 @@ class MCUController:
         The already-created serial protocol object.
     """
 
-    def __init__(self, notebook: ttk.Notebook, root: tk.Tk, protocol, start_daq=None):
+    def __init__(self, notebook: ttk.Notebook, root: tk.Tk, protocol, start_daq=None, duration_var=None):
         self.protocol = protocol
         self._root = root
 
-        self.measurement = MeasurementTab(notebook, self, start_daq=start_daq)
+        self.measurement = MeasurementTab(notebook, self, start_daq=start_daq, duration_var=duration_var)
         self.position = PositionTab(notebook, self)
         self.speed_cal = SpeedCalTab(notebook, self)
         self.pos_cal = PosCalTab(notebook, self)
@@ -202,10 +202,11 @@ class _MCUTab(ttk.Frame):
 # ---------------------------------------------------------------------------
 
 class MeasurementTab(_MCUTab):
-    def __init__(self, parent, ctrl, start_daq=None):
+    def __init__(self, parent, ctrl, start_daq=None, duration_var=None):
         super().__init__(parent, ctrl)
         self._is_measuring = False
         self._start_daq = start_daq  # callable(on_daq_ready=fn) or None
+        self._duration_var = duration_var
         self._build()
 
     def _build(self):
@@ -244,6 +245,12 @@ class MeasurementTab(_MCUTab):
         # ── Control / log ───────────────────────────────────────────────────
         gf3 = ttk.LabelFrame(self, text="Measurement Control", padding=8)
         gf3.pack(fill=tk.BOTH, expand=True, **pad)
+
+        if self._duration_var is not None:
+            dur_frame = ttk.Frame(gf3)
+            dur_frame.pack(anchor="e", pady=(0, 6), fill=tk.X)
+            ttk.Label(dur_frame, text="Audio Recording/Measurement Duration (s):").pack(side=tk.LEFT)
+            ttk.Entry(dur_frame, textvariable=self._duration_var, width=8).pack(side=tk.LEFT, padx=4)
 
         self._log = tk.Text(gf3, height=10, state="disabled", background="#f5f5f5", font=_F()["mono"])
         self._log.pack(fill=tk.BOTH, expand=True)

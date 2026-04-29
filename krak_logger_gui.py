@@ -1,4 +1,4 @@
-from HelpFunctions.lanxi import LanXI+
+from HelpFunctions.lanxi import LanXI
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -877,8 +877,10 @@ notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
 krak_frame = ttk.Frame(notebook)
 notebook.add(krak_frame, text="KRAK Logger")
 
+shared_duration_var = tk.StringVar(value="1")
+
 # MCU tabs – created now so they exist before any connect attempt
-mcu_ctrl = MCUController(notebook, root, mcu_protocol, start_daq=start_linked_recording)
+mcu_ctrl = MCUController(notebook, root, mcu_protocol, start_daq=start_linked_recording, duration_var=shared_duration_var)
 
 # ── KRAK Logger content (inside krak_frame) ─────────────────────────────────
 
@@ -931,8 +933,7 @@ clear_metadata_btn.pack(pady=2)
 
 duration_label = tk.Label(control_frame, text="Duration (s):")
 duration_label.pack(anchor="e")
-duration_entry = tk.Entry(control_frame)
-duration_entry.insert(0, "1")
+duration_entry = tk.Entry(control_frame, textvariable=shared_duration_var)
 duration_entry.pack(anchor="e")
 
 # Recording section
