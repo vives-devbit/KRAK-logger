@@ -9,6 +9,9 @@ pyarrow==19.0.0
 # fastparquet>=2024.2.0  # Not currently installed
 openpyxl==3.1.5
 
+# Serial communication (MCU controller)
+pyserial==3.5
+
 # Audio processing
 sounddevice==0.5.2
 soundfile==0.13.1

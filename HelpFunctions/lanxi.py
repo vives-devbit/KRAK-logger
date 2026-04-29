@@ -177,9 +177,12 @@ class LanXI:
         except Exception as e:
             print(f"Warning during stream reset: {e}")
 
-    def SampleChannels(self, duration):
+    def SampleChannels(self, duration, on_ready=None):
         """
         Sample all four channels for the given duration (in seconds).
+
+        on_ready: optional callable fired once the streaming socket is connected
+                  and data is flowing (use this to trigger external hardware).
         Returns:
             time_axis: np.ndarray of time values
             data: np.ndarray shape (4, N) where N is the number of samples
@@ -198,12 +201,17 @@ class LanXI:
             print(f"Failed to start measurement, attempting to reset stream: {e}")
             self.reset_stream()
             self.response = requests.post(self.host + "/rest/rec/measurements")
-        
+
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 print(f"Attempting to connect to {self.ip}:{self.inputport}")
                 s.connect((self.ip, self.inputport))
                 print(f"Successfully connected to streaming socket")
+                if on_ready is not None:
+                    try:
+                        on_ready()
+                    except Exception as e:
+                        print(f"on_ready callback error: {e}")
                 total_samples = 0
                 while total_samples <= num_samples:
                     # Get header

@@ -1,4 +1,4 @@
-from HelpFunctions.lanxi import LanXI
+from HelpFunctions.lanxi import LanXI+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -20,6 +20,9 @@ from minio.commonconfig import CopySource
 import atexit
 import signal
 
+from mcu_protocol import MCUProtocol
+from mcu_tabs import MCUController, _ts, scale_fonts, _F
+
 # Global variables
 recording = False
 DURATION = 1  # Default duration (can be adjusted)
@@ -36,6 +39,8 @@ excel_file_path = None  # For storing current Excel file path
 loaded_excel_metadata = {}  # For storing currently loaded metadata from Excel
 sort_by = "time"  # Default sort by time
 sort_order = "desc"  # Default sort newest first
+recorded_data = None
+recorded_time_axis = None
 
 # Smart .env path detection for both development and executable
 def find_env_file():
@@ -67,15 +72,21 @@ def find_env_file():
 import sys  # Add sys import for executable detection
 env_path = find_env_file()
 dotenv.load_dotenv(env_path)
-ip = os.getenv("BKDAQ_IP")
-Lanxi = LanXI(ip)
-Lanxi.setup_stream()
-SAMPLE_RATE = Lanxi.sample_rate
-NUM_SAMPLES = SAMPLE_RATE * DURATION
-
-# Ensure LAN-XI is released even on crash or Ctrl+C
-atexit.register(Lanxi.close_stream)
-signal.signal(signal.SIGINT, lambda _s, _f: (Lanxi.close_stream(), sys.exit(0)))
+try:
+    ip = os.getenv("BKDAQ_IP")
+    Lanxi = LanXI(ip)
+    Lanxi.setup_stream()
+    SAMPLE_RATE = Lanxi.sample_rate
+    NUM_SAMPLES = SAMPLE_RATE * DURATION
+    LANXI_AVAILABLE = True
+    atexit.register(Lanxi.close_stream)
+    signal.signal(signal.SIGINT, lambda _s, _f: (Lanxi.close_stream(), sys.exit(0)))
+except Exception as _lanxi_err:
+    print(f"LAN-XI not available: {_lanxi_err}")
+    Lanxi = None
+    SAMPLE_RATE = 51200
+    NUM_SAMPLES = SAMPLE_RATE * DURATION
+    LANXI_AVAILABLE = False
 
 def select_excel_file():
     global excel_metadata_df, excel_file_path
@@ -242,8 +253,13 @@ def ensure_temp_dir():
         os.makedirs(TEMP_DIR)
 
 
-def record_data():
+def record_data(on_daq_ready=None):
     global recording, NUM_SAMPLES, DURATION, OUTPUT_WAV_FILE, OUTPUT_PARQUET_FILE
+    if not LANXI_AVAILABLE:
+        messagebox.showerror("LAN-XI Not Available",
+                             "No LAN-XI device connected. Check BKDAQ_IP in .env and restart.")
+        return
+
     try:
         DURATION = float(duration_entry.get())
     except ValueError:
@@ -258,7 +274,7 @@ def record_data():
     recording = True
 
     try:
-        time_axis, data = Lanxi.SampleChannels(DURATION)
+        time_axis, data = Lanxi.SampleChannels(DURATION, on_ready=on_daq_ready)
     except ConnectionRefusedError as e:
         recording = False
         messagebox.showerror("Connection Error", 
@@ -302,7 +318,7 @@ def save_to_parquet():
 
         # Add traditional metadata fields
         metadata.update({
-            "Sample Rate (Hz)": Lanxi.sample_rate,
+            "Sample Rate (Hz)": Lanxi.sample_rate if Lanxi is not None else SAMPLE_RATE,
         })
 
         # Add parameter entries
@@ -447,6 +463,17 @@ def play_ai3_audio():
 def start_recording():
     if not recording:
         threading.Thread(target=record_data, daemon=True).start()
+
+def start_linked_recording(on_daq_ready):
+    """Start a DAQ-linked recording. on_daq_ready() is called from the
+    recording thread the instant the streaming socket connects, so the
+    MCU measurement command fires exactly when data starts flowing."""
+    if not LANXI_AVAILABLE:
+        messagebox.showerror("LAN-XI Not Available",
+                             "No LAN-XI device connected. Check BKDAQ_IP in .env and restart.")
+        return
+    if not recording:
+        threading.Thread(target=record_data, args=(on_daq_ready,), daemon=True).start()
 
 
 
@@ -721,6 +748,15 @@ def launch_editor():
 
 
 def on_closing():
+    global mcu_protocol
+
+    # Disconnect MCU serial
+    try:
+        if mcu_protocol is not None and mcu_protocol.connected:
+            mcu_protocol.disconnect()
+    except Exception as e:
+        print(f"Error disconnecting MCU: {e}")
+
     try:
         # Stop any audio playback
         sd.stop()
@@ -730,7 +766,8 @@ def on_closing():
 
     try:
         # Close LAN-XI stream
-        Lanxi.close_stream()
+        if Lanxi is not None:
+            Lanxi.close_stream()
         print("LAN-XI stream closed")
     except Exception as e:
         print(f"Error closing LAN-XI stream: {e}")
@@ -757,10 +794,96 @@ def on_closing():
 
 # Create the GUI
 root = tk.Tk()
-root.title("HBK LAN-XI 3676 Recorder")
+root.title("KRAK Suite – LAN-XI Recorder + MCU Controller")
+scale_fonts(15)  # set readable default; user can adjust via the Font spinbox
+
+# ── MCU Serial Connection bar (always visible, above tabs) ─────────────────
+mcu_protocol = MCUProtocol()
+mcu_ctrl: MCUController | None = None  # set after notebook is built
+
+mcu_bar = ttk.LabelFrame(root, text="MCU Serial Connection (STM32 NUCLEO)", padding=5)
+mcu_bar.pack(fill=tk.X, padx=10, pady=(8, 2))
+
+tk.Label(mcu_bar, text="COM Port:").pack(side=tk.LEFT, padx=(0, 4))
+mcu_port_var = tk.StringVar()
+mcu_port_combo = ttk.Combobox(mcu_bar, textvariable=mcu_port_var, width=10, state="readonly")
+mcu_port_combo.pack(side=tk.LEFT, padx=(0, 4))
+
+def _refresh_mcu_ports():
+    ports = MCUProtocol.list_ports()
+    mcu_port_combo["values"] = ports
+    if ports and not mcu_port_var.get():
+        mcu_port_var.set(ports[0])
+    mcu_status_lbl.config(text=f"Found {len(ports)} port(s)" if ports else "No ports found",
+                          foreground="gray")
+
+ttk.Button(mcu_bar, text="Refresh", command=_refresh_mcu_ports).pack(side=tk.LEFT, padx=(0, 4))
+
+mcu_connect_btn = ttk.Button(mcu_bar, text="Connect", command=lambda: _toggle_mcu())
+mcu_connect_btn.pack(side=tk.LEFT, padx=(0, 12))
+
+mcu_status_lbl = tk.Label(mcu_bar, text="Disconnected", foreground="red")
+mcu_status_lbl.pack(side=tk.LEFT)
+
+tk.Label(mcu_bar, text="Font:").pack(side=tk.LEFT, padx=(16, 2))
+_font_size_var = tk.IntVar(value=15)
+
+def _apply_font_size(*_):
+    try:
+        size = _font_size_var.get()
+        if 8 <= size <= 20:
+            scale_fonts(size)
+    except tk.TclError:
+        pass
+
+_font_spin = ttk.Spinbox(mcu_bar, from_=8, to=20, width=3,
+                          textvariable=_font_size_var, command=_apply_font_size)
+_font_spin.pack(side=tk.LEFT)
+_font_spin.bind("<Return>", _apply_font_size)
+
+def _toggle_mcu():
+    global mcu_ctrl
+    if mcu_protocol.connected:
+        try:
+            mcu_protocol.send("STOP")
+        except Exception:
+            pass
+        mcu_protocol.disconnect()
+        if mcu_ctrl:
+            mcu_ctrl.on_disconnect()
+        mcu_connect_btn.config(text="Connect")
+        mcu_status_lbl.config(text="Disconnected", foreground="red")
+    else:
+        port = mcu_port_var.get()
+        if not port:
+            messagebox.showwarning("No Port", "Please select a COM port.")
+            return
+        try:
+            mcu_protocol.connect(port)
+            if mcu_ctrl:
+                mcu_ctrl.on_connect()
+            mcu_connect_btn.config(text="Disconnect")
+            mcu_status_lbl.config(text=f"Connected to {port}", foreground="green")
+        except Exception as exc:
+            messagebox.showerror("Connection Error", f"Failed to connect:\n{exc}")
+
+_refresh_mcu_ports()
+
+# ── Main notebook ───────────────────────────────────────────────────────────
+notebook = ttk.Notebook(root)
+notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+
+# KRAK Logger tab (existing functionality)
+krak_frame = ttk.Frame(notebook)
+notebook.add(krak_frame, text="KRAK Logger")
+
+# MCU tabs – created now so they exist before any connect attempt
+mcu_ctrl = MCUController(notebook, root, mcu_protocol, start_daq=start_linked_recording)
+
+# ── KRAK Logger content (inside krak_frame) ─────────────────────────────────
 
 # Metadata Controls
-control_frame = tk.Frame(root)
+control_frame = tk.Frame(krak_frame)
 control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
 
 
@@ -867,7 +990,7 @@ scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
 # Create a larger listbox for better filename visibility
 dropdown_var = tk.StringVar()
-file_listbox = tk.Listbox(file_list_frame, height=8, width=45, yscrollcommand=scrollbar.set, font=("Courier", 9))
+file_listbox = tk.Listbox(file_list_frame, height=8, width=45, yscrollcommand=scrollbar.set, font=_F()["mono"])
 file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 scrollbar.config(command=file_listbox.yview)
 
@@ -895,7 +1018,7 @@ editor_button.pack(anchor="e", pady=(10, 0))
 
 fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
 fig.tight_layout(pad=3.0)
-canvas = FigureCanvasTkAgg(fig, master=root)
+canvas = FigureCanvasTkAgg(fig, master=krak_frame)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
