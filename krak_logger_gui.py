@@ -307,6 +307,10 @@ def record_data(on_daq_ready=None):
     audio_data = (data[0] / max_voltage * 32767).astype(np.int16)
     wav.write(OUTPUT_WAV_FILE, SAMPLE_RATE, audio_data)
 
+    # Save parquet immediately with all channels (AI0–AI3) so it is
+    # available locally even before uploading to MinIO.
+    save_to_parquet()
+
     # Make upload button red to indicate data needs to be uploaded
     upload_button.config(bg="red", fg="white")
 

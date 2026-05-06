@@ -249,12 +249,14 @@ class LanXI:
                 pass
             raise e
 
-        # Truncate to the same length and to num_samples
-        min_len = min(len(arrays[0]), len(arrays[1]), len(arrays[2]), len(arrays[3]), num_samples)
-        ch1 = np.array(arrays[0][:min_len])
-        ch2 = np.array(arrays[1][:min_len])
-        ch3 = np.array(arrays[2][:min_len])
-        ch4 = np.array(arrays[3][:min_len])
+        # Truncate to the same length and to num_samples for active channels only
+        active_lengths = [len(ch) for ch in arrays if len(ch) > 0]
+        min_len = min(active_lengths + [num_samples]) if active_lengths else 0
+        
+        ch1 = np.array(arrays[0][:min_len]) if len(arrays[0]) > 0 else np.zeros(min_len)
+        ch2 = np.array(arrays[1][:min_len]) if len(arrays[1]) > 0 else np.zeros(min_len)
+        ch3 = np.array(arrays[2][:min_len]) if len(arrays[2]) > 0 else np.zeros(min_len)
+        ch4 = np.array(arrays[3][:min_len]) if len(arrays[3]) > 0 else np.zeros(min_len)
         time_axis = np.linspace(0, min_len / sample_rate, min_len, endpoint=False)
         data = np.vstack([ch1, ch2, ch3, ch4])
         return time_axis, data

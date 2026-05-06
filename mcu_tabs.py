@@ -246,6 +246,15 @@ class MeasurementTab(_MCUTab):
         gf3 = ttk.LabelFrame(self, text="Measurement Control", padding=8)
         gf3.pack(fill=tk.BOTH, expand=True, **pad)
 
+        spd_frame = ttk.Frame(gf3)
+        spd_frame.pack(anchor="w", pady=(0, 6), fill=tk.X)
+        ttk.Label(spd_frame, text="Measurement Speed (mm/s):").pack(side=tk.LEFT)
+        self._spd_var = tk.DoubleVar(value=2.0)
+        self._spd_entry = ttk.Entry(spd_frame, textvariable=self._spd_var, width=8)
+        self._spd_entry.pack(side=tk.LEFT, padx=4)
+        self._spd_btn = ttk.Button(spd_frame, text="Set Speed", state="disabled", command=self._apply_speed)
+        self._spd_btn.pack(side=tk.LEFT, padx=4)
+
         if self._duration_var is not None:
             dur_frame = ttk.Frame(gf3)
             dur_frame.pack(anchor="e", pady=(0, 6), fill=tk.X)
@@ -371,15 +380,26 @@ class MeasurementTab(_MCUTab):
         elif line.startswith("Moving extra distance"):
             _append_log(self._log, line + "\n")
 
+    def _apply_speed(self):
+        try:
+            spd = float(self._spd_var.get())
+            if spd <= 0:
+                raise ValueError
+            self.send(f"SETSPD {spd:.1f}")
+        except ValueError:
+            messagebox.showwarning("Input Error", "Invalid speed value.")
+
     def on_connect(self):
         self._mf_btn.config(state="normal")
         self._th_btn.config(state="normal")
+        self._spd_btn.config(state="normal")
         self._mf_status.config(text="Ready", foreground="gray")
         self._th_status.config(text="Ready", foreground="gray")
 
     def on_disconnect(self):
         self._mf_btn.config(state="disabled")
         self._th_btn.config(state="disabled")
+        self._spd_btn.config(state="disabled")
         self._stop_btn.config(state="disabled")
         self._is_measuring = False
 

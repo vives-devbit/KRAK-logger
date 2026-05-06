@@ -1,4 +1,4 @@
-"""Signal processing class for trimming acoustic signals based on reference thresholds."""
+﻿"""Signal processing class for trimming acoustic signals based on reference thresholds."""
 
 import numpy as np
 import pandas as pd
@@ -10,136 +10,171 @@ from typing import Tuple, Dict, Any, Optional
 class SignalProcessor:
     """Handles signal processing operations including threshold-based trimming."""
 
-    def __init__(self, config: Dict[str, Any]):
-        """Initialize with configuration parameters.
-
-        Args:
-            config: Dictionary containing processing parameters
-        """
+    def __init__(self, config: Dict[str, Any], filter_helper=None):
         self.config = config
         self.acoustic_column = config.get('ACOUSTIC_COLUMN', 'AI0 (V)')
         self.reference_column = config.get('REFERENCE_COLUMN', 'AI1 (V)')
         self.sampling_rate = config.get('SAMPLING_RATE', 65536)
         self.start_threshold = config.get('START_THRESHOLD', 0.1)
+        self.start_extra_time_seconds = config.get('START_EXTRA_TIME_SECONDS', 0.0)
         self.stop_threshold = config.get('STOP_THRESHOLD', 0.4)
         self.hysteresis = config.get('HYSTERESIS', 0.2)
         self.extra_time_seconds = config.get('EXTRA_TIME_SECONDS', 0.250)
         self.min_duration_below_threshold = config.get('MIN_DURATION_BELOW_THRESHOLD', 0.25)
         self.required_metadata_fields = config.get('REQUIRED_METADATA_FIELDS',
                                                  ["Moisture", "Speed", "Orientation", "Distance"])
+        # Peak force trimming parameters
+        self.peak_force_time_before = config.get('PEAK_FORCE_TIME_BEFORE', 0.5)
+        self.peak_force_time_after = config.get('PEAK_FORCE_TIME_AFTER', 0.5)
+        # Threshold-to-peak trimming parameters
+        self.threshold_to_peak_threshold = config.get('THRESHOLD_TO_PEAK_THRESHOLD', 0.1)
+        self.threshold_to_peak_time_before = config.get('THRESHOLD_TO_PEAK_TIME_BEFORE', 0.1)
+        self.threshold_to_peak_time_after = config.get('THRESHOLD_TO_PEAK_TIME_AFTER', 0.1)
+        # Percentage-based threshold trimming parameters
+        self.start_threshold_pct = config.get('START_THRESHOLD_PCT', 10.0)
+        self.stop_threshold_pct = config.get('STOP_THRESHOLD_PCT', 40.0)
+        self.hysteresis_pct = config.get('HYSTERESIS_PCT', 20.0)
+        # Filter (not used locally but accepted so callers can pass filter_helper)
+        self.filter_helper = filter_helper
 
     def extract_metadata(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Extract metadata from parquet file attributes.
-
-        Args:
-            df: Pandas dataframe with metadata in attrs
-
-        Returns:
-            dict: Dictionary with metadata values, None for missing fields
-        """
         metadata = {}
         for field in self.required_metadata_fields:
             metadata[field] = df.attrs.get(field, None)
         return metadata
 
-    def trim_by_threshold(self, acoustic_signal: np.ndarray, reference_signal: np.ndarray) -> Tuple[np.ndarray, int, int]:
-        """Trim signals based on threshold crossing in reference signal.
-
-        Args:
-            acoustic_signal: Acoustic signal array
-            reference_signal: Reference signal array (DC offset will be removed in this function)
-
-        Returns:
-            tuple: (trimmed_acoustic, start_idx, end_idx)
-        """
-        # Remove DC offset using mean of first 0.5 seconds (or entire signal if shorter)
+    def _remove_dc(self, reference_signal: np.ndarray) -> np.ndarray:
+        """Remove DC offset using the mean of the first 0.5 s."""
         half_second_samples = int(0.5 * self.sampling_rate)
         baseline_samples = min(half_second_samples, len(reference_signal))
         dc_offset = np.mean(reference_signal[:baseline_samples])
-        reference_dc_removed = reference_signal - dc_offset
+        return reference_signal - dc_offset
+
+    def trim_by_threshold(self, acoustic_signal: np.ndarray, reference_signal: np.ndarray,
+                          ai2_signal: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int, int]:
+        """Trim signals based on threshold crossing in reference signal."""
+        reference_dc_removed = self._remove_dc(reference_signal)
 
         # Find first point where signal crosses start threshold (positive direction)
         start_indices = np.where(reference_dc_removed >= self.start_threshold)[0]
         if len(start_indices) == 0:
-            # No crossing found, return empty signal
             return np.array([]), 0, 0
         start_idx = start_indices[0]
+
+        # Apply start extra time (go back before the threshold crossing)
+        extra_start_samples = int(self.start_extra_time_seconds * self.sampling_rate)
+        start_idx = max(0, start_idx - extra_start_samples)
 
         # Find first point after start where signal goes above stop threshold + hysteresis
         hysteresis_threshold = self.stop_threshold + self.hysteresis
         above_hysteresis = np.where(reference_dc_removed[start_idx:] >= hysteresis_threshold)[0]
 
         if len(above_hysteresis) == 0:
-            # Signal never goes above hysteresis threshold, use end of signal
             end_idx = len(reference_signal)
         else:
-            # Found where it goes above hysteresis threshold, now find where it goes back below stop threshold
             hysteresis_idx = start_idx + above_hysteresis[0]
             below_stop = np.where(reference_dc_removed[hysteresis_idx:] < self.stop_threshold)[0]
 
             if len(below_stop) == 0:
-                # Signal never goes back below stop threshold, use end of signal
                 end_idx = len(reference_signal)
             else:
-                # Find where signal stays below stop threshold for minimum duration
                 min_duration_samples = int(self.min_duration_below_threshold * self.sampling_rate)
                 stop_idx = None
 
-                # Check each point where signal goes below threshold
                 for below_idx in below_stop:
                     candidate_stop_idx = hysteresis_idx + below_idx
-
-                    # Check if signal stays below threshold for minimum duration
                     end_check_idx = min(len(reference_signal), candidate_stop_idx + min_duration_samples)
                     check_window = reference_dc_removed[candidate_stop_idx:end_check_idx]
-
-                    # If all samples in the window are below threshold, this is a valid stop
                     if len(check_window) > 0 and np.all(check_window < self.stop_threshold):
                         stop_idx = candidate_stop_idx
                         break
 
                 if stop_idx is None:
-                    # No valid stop found (signal doesn't stay below threshold long enough)
                     end_idx = len(reference_signal)
                 else:
-                    # Add extra time after stop condition is met
                     extra_samples = int(self.extra_time_seconds * self.sampling_rate)
                     end_idx = min(len(reference_signal), stop_idx + extra_samples)
 
         return acoustic_signal[start_idx:end_idx], start_idx, end_idx
 
+    def trim_by_peak_force(self, acoustic_signal: np.ndarray, reference_signal: np.ndarray,
+                           ai2_signal: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int, int]:
+        """Trim based on a window around the maximum peak in the reference signal (loadcell)."""
+        reference_dc_removed = self._remove_dc(reference_signal)
+
+        max_peak_idx = int(np.argmax(np.abs(reference_dc_removed)))
+
+        samples_before = int(self.peak_force_time_before * self.sampling_rate)
+        samples_after = int(self.peak_force_time_after * self.sampling_rate)
+
+        start_idx = max(0, max_peak_idx - samples_before)
+        end_idx = min(len(acoustic_signal), max_peak_idx + samples_after)
+
+        return acoustic_signal[start_idx:end_idx], start_idx, end_idx
+
+    def trim_by_threshold_to_peak(self, acoustic_signal: np.ndarray, reference_signal: np.ndarray,
+                                  ai2_signal: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int, int]:
+        """Trim using threshold crossing as start and loadcell peak as end."""
+        reference_dc_removed = self._remove_dc(reference_signal)
+
+        abs_reference = np.abs(reference_dc_removed)
+        max_value = np.max(abs_reference)
+        if max_value <= 0:
+            return np.array([]), 0, 0
+
+        normalized_reference = abs_reference / max_value
+
+        threshold_crossings = np.where(normalized_reference >= self.threshold_to_peak_threshold)[0]
+        if len(threshold_crossings) == 0:
+            return np.array([]), 0, 0
+
+        threshold_idx = threshold_crossings[0]
+        max_peak_idx = int(np.argmax(abs_reference))
+
+        samples_before_threshold = int(self.threshold_to_peak_time_before * self.sampling_rate)
+        samples_after_peak = int(self.threshold_to_peak_time_after * self.sampling_rate)
+
+        start_idx = max(0, threshold_idx - samples_before_threshold)
+        end_idx = min(len(acoustic_signal), max_peak_idx + samples_after_peak)
+
+        if start_idx >= end_idx:
+            return np.array([]), 0, 0
+
+        return acoustic_signal[start_idx:end_idx], start_idx, end_idx
+
+    def trim_by_threshold_pct(self, acoustic_signal: np.ndarray, reference_signal: np.ndarray,
+                              ai2_signal: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int, int]:
+        """Trim using start/stop thresholds expressed as a percentage of the loadcell peak."""
+        reference_dc_removed = self._remove_dc(reference_signal)
+        max_value = np.max(reference_dc_removed)
+
+        if max_value <= 0:
+            return np.array([]), 0, 0
+
+        orig_start = self.start_threshold
+        orig_stop = self.stop_threshold
+        orig_hysteresis = self.hysteresis
+        self.start_threshold = (self.start_threshold_pct / 100.0) * max_value
+        self.stop_threshold = (self.stop_threshold_pct / 100.0) * max_value
+        self.hysteresis = (self.hysteresis_pct / 100.0) * max_value
+
+        result = self.trim_by_threshold(acoustic_signal, reference_signal, ai2_signal)
+
+        self.start_threshold = orig_start
+        self.stop_threshold = orig_stop
+        self.hysteresis = orig_hysteresis
+
+        return result
+
     def remove_dc_offset(self, signal: np.ndarray) -> Tuple[np.ndarray, float]:
-        """Remove DC offset from signal using baseline estimation.
-
-        Args:
-            signal: Input signal array
-
-        Returns:
-            tuple: (dc_compensated_signal, dc_offset_value)
-        """
-        # Remove DC offset using mean of first 0.5 seconds (or entire signal if shorter)
         half_second_samples = int(0.5 * self.sampling_rate)
         baseline_samples = min(half_second_samples, len(signal))
         dc_offset = np.mean(signal[:baseline_samples])
-        signal_dc_removed = signal - dc_offset
-
-        return signal_dc_removed, dc_offset
+        return signal - dc_offset, dc_offset
 
     def plot_trimming(self, acoustic: np.ndarray, reference: np.ndarray, peak_idx: int,
                      start: int, end: int, filename: str, is_skipped: bool = False,
                      output_dir: str = "plots") -> None:
-        """Plot the full acoustic and reference signal with trimming overlay and save to file.
-
-        Args:
-            acoustic: Acoustic signal array
-            reference: Reference signal array
-            peak_idx: Peak detection index
-            start: Start trimming index
-            end: End trimming index
-            filename: Base filename for saving
-            is_skipped: Whether this signal was skipped
-            output_dir: Directory to save plots
-        """
         time = np.arange(len(acoustic)) / self.sampling_rate
         ref_time = np.arange(len(reference)) / self.sampling_rate
 
@@ -151,7 +186,7 @@ class SignalProcessor:
         if not is_skipped:
             plt.axvspan(start / self.sampling_rate, end / self.sampling_rate,
                        color='orange', alpha=0.3, label="Trim Window")
-        plt.title("Acoustic Signal with Trim Region" + (" (SKIPPED - Below Threshold)" if is_skipped else ""))
+        plt.title("Acoustic Signal with Trim Region" + (" (SKIPPED)" if is_skipped else ""))
         plt.xlabel("Time [s]")
         plt.ylabel("Amplitude")
         plt.legend()
@@ -166,7 +201,6 @@ class SignalProcessor:
 
         plt.tight_layout()
 
-        # Save to appropriate folder
         folder = os.path.join(output_dir, "skipped") if is_skipped else output_dir
         os.makedirs(folder, exist_ok=True)
         plt.savefig(f"{folder}/{filename}_trimming.png", dpi=150, bbox_inches='tight')
@@ -174,24 +208,12 @@ class SignalProcessor:
 
     def process_dataframe(self, df: pd.DataFrame, should_plot: bool = False,
                          plot_filename: Optional[str] = None, output_dir: str = "plots") -> Tuple[pd.DataFrame, bool]:
-        """Process a single dataframe and return trimmed result.
-
-        Args:
-            df: Input dataframe with acoustic and reference signals
-            should_plot: Whether to generate plots
-            plot_filename: Base filename for plots (required if should_plot=True)
-            output_dir: Directory for saving plots
-
-        Returns:
-            tuple: (trimmed_dataframe or None, was_skipped)
-        """
         try:
             acoustic_signal = df[self.acoustic_column].values.astype(np.float32)
             reference_signal = df[self.reference_column].values.astype(np.float32)
 
             trimmed_signal, start_idx, end_idx = self.trim_by_threshold(acoustic_signal, reference_signal)
 
-            # Check if trimmed signal is empty
             if len(trimmed_signal) == 0:
                 if should_plot and plot_filename:
                     self.plot_trimming(acoustic_signal, reference_signal, 0, 0, len(acoustic_signal),
@@ -202,12 +224,7 @@ class SignalProcessor:
                 self.plot_trimming(acoustic_signal, reference_signal, 0, start_idx, end_idx,
                                  plot_filename, is_skipped=False, output_dir=output_dir)
 
-            # Create trimmed dataframe with the acoustic signal
-            trimmed_df = pd.DataFrame({
-                self.acoustic_column: trimmed_signal
-            })
-
-            # Extract and preserve metadata in the trimmed parquet file
+            trimmed_df = pd.DataFrame({self.acoustic_column: trimmed_signal})
             metadata = self.extract_metadata(df)
             for key, value in metadata.items():
                 trimmed_df.attrs[key] = value
@@ -216,55 +233,3 @@ class SignalProcessor:
 
         except Exception as e:
             raise Exception(f"Error processing dataframe: {e}")
-
-    def signal_to_audio_buffer(self, signal: np.ndarray, normalize: bool = True) -> bytes:
-        """Convert signal array to WAV audio buffer for playback.
-
-        Args:
-            signal: Signal array to convert to audio
-            normalize: Whether to normalize signal amplitude for better audio playback
-
-        Returns:
-            bytes: WAV audio data as bytes for st.audio()
-        """
-        try:
-            import soundfile as sf
-            from io import BytesIO
-
-            # Prepare signal for audio playback
-            audio_signal = signal.copy().astype(np.float32)
-
-            # Normalize signal if requested (recommended for audio playback)
-            if normalize:
-                # Avoid division by zero
-                max_val = np.max(np.abs(audio_signal))
-                if max_val > 0:
-                    audio_signal = audio_signal / max_val * 0.8  # Scale to 80% to avoid clipping
-
-            # Convert to audio buffer
-            audio_buffer = BytesIO()
-            sf.write(audio_buffer, audio_signal, samplerate=self.sampling_rate, format='WAV')
-            audio_buffer.seek(0)
-
-            return audio_buffer.read()
-
-        except Exception as e:
-            raise Exception(f"Error converting signal to audio: {e}")
-
-    def create_audio_comparison(self, original_signal: np.ndarray, trimmed_signal: np.ndarray) -> Tuple[bytes, bytes]:
-        """Create audio buffers for both original and trimmed signals for comparison.
-
-        Args:
-            original_signal: Original full signal
-            trimmed_signal: Trimmed signal
-
-        Returns:
-            tuple: (original_audio_bytes, trimmed_audio_bytes)
-        """
-        try:
-            original_audio = self.signal_to_audio_buffer(original_signal)
-            trimmed_audio = self.signal_to_audio_buffer(trimmed_signal)
-            return original_audio, trimmed_audio
-
-        except Exception as e:
-            raise Exception(f"Error creating audio comparison: {e}")
