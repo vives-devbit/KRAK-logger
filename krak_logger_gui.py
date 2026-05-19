@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
+import time
 import dotenv
 import datetime
 import sounddevice as sd
@@ -21,7 +22,7 @@ import atexit
 import signal
 
 from mcu_protocol import MCUProtocol
-from mcu_tabs import MCUController, _ts, scale_fonts, _F
+from mcu_tabs import MCUController, _ts, scale_fonts, _F, _parse_field as _mcu_parse_field
 
 # Global variables
 recording = False
@@ -41,6 +42,14 @@ sort_by = "time"  # Default sort by time
 sort_order = "desc"  # Default sort newest first
 recorded_data = None
 recorded_time_axis = None
+recorded_loadcell = None        # (time_axis_s, raw_values) from MCU, or None
+FOCUSRITE_SAMPLE_RATE = 48000
+_audio_device_map: dict = {}    # display name -> sd device index; "LAN-XI" -> None
+audio_source_var = None         # tk.StringVar, assigned during UI init
+audio_source_combo = None       # ttk.Combobox, assigned during UI init
+focusrite_sensitivity_var = None  # tk.StringVar V/FS, assigned during UI init
+loadcell_enable_var = None      # tk.BooleanVar, assigned during UI init
+loadcell_scale_var = None       # tk.StringVar raw->N, assigned during UI init
 
 # Smart .env path detection for both development and executable
 def find_env_file():
@@ -87,6 +96,86 @@ except Exception as _lanxi_err:
     SAMPLE_RATE = 51200
     NUM_SAMPLES = SAMPLE_RATE * DURATION
     LANXI_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# Load cell data collection from MCU ADCSTREAM (200 Hz)
+# ---------------------------------------------------------------------------
+
+class LoadCellCollector:
+    """Collects load cell data from MCU during a recording window via ADCSTREAM.
+
+    Sends ADCSTREAM 5 (5 ms = 200 Hz) on start(), parses ADC:CURR: lines,
+    then sends ADCSTREAM 0 and returns (time_axis_s, raw_values) on stop().
+    Timestamps are relative to start() using time.perf_counter().
+    """
+    # MCU firmware: LC_LOGGING START -> LC:<N> lines at 200 Hz; LC_LOGGING STOP to end
+
+    def __init__(self, protocol):
+        self._proto = protocol
+        self._samples = []
+        self._t_start = 0.0
+        self._lock = threading.Lock()
+
+    def start(self):
+        with self._lock:
+            self._samples = []
+            self._t_start = time.perf_counter()
+        self._proto.add_callback(self._on_line)
+        self._proto.send("LC_LOGGING START")
+
+    def stop(self):
+        """Stop stream. Returns (time_axis_s, raw_values) arrays, or (None, None) if empty."""
+        self._proto.send("LC_LOGGING STOP")
+        self._proto.remove_callback(self._on_line)
+        with self._lock:
+            data = list(self._samples)
+        if not data:
+            return None, None
+        times = np.array([s[0] for s in data])
+        values = np.array([s[1] for s in data], dtype=float)
+        return times, values
+
+    def _on_line(self, line):
+        # Firmware responds to LC_LOGGING START with LC:<value> lines at 200 Hz
+        if not line.startswith("LC:"):
+            return
+        load_str = line[3:].strip()
+        try:
+            val = float(load_str)
+            t_rel = time.perf_counter() - self._t_start
+            with self._lock:
+                self._samples.append((t_rel, val))
+        except ValueError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Audio device enumeration for Focusrite / sounddevice
+# ---------------------------------------------------------------------------
+
+def list_audio_input_devices():
+    """Return list of (index, name) for all input-capable audio devices."""
+    try:
+        return [(i, d['name']) for i, d in enumerate(sd.query_devices())
+                if d['max_input_channels'] > 0]
+    except Exception:
+        return []
+
+
+def refresh_audio_devices():
+    """Repopulate the audio source combobox with LAN-XI + detected input devices."""
+    global _audio_device_map
+    _audio_device_map = {"LAN-XI": None}
+    choices = ["LAN-XI"]
+    for idx, name in list_audio_input_devices():
+        key = f"{name} [{idx}]"
+        _audio_device_map[key] = idx
+        choices.append(key)
+    if audio_source_combo is not None:
+        audio_source_combo.configure(values=choices)
+        if audio_source_var is not None and audio_source_var.get() not in choices:
+            audio_source_var.set("LAN-XI")
 
 def select_excel_file():
     global excel_metadata_df, excel_file_path
@@ -255,7 +344,11 @@ def ensure_temp_dir():
 
 def record_data(on_daq_ready=None):
     global recording, NUM_SAMPLES, DURATION, OUTPUT_WAV_FILE, OUTPUT_PARQUET_FILE
-    if not LANXI_AVAILABLE:
+    global recorded_data, recorded_time_axis, recorded_loadcell
+
+    source = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
+
+    if source == "LAN-XI" and not LANXI_AVAILABLE:
         messagebox.showerror("LAN-XI Not Available",
                              "No LAN-XI device connected. Check BKDAQ_IP in .env and restart.")
         return
@@ -273,70 +366,136 @@ def record_data(on_daq_ready=None):
 
     recording = True
 
+    # Optionally start load cell collection via MCU LC_LOGGING (200 Hz, UART)
+    # This is independent of LAN-XI channel logging -- AI1 on LAN-XI is unaffected.
+    lc_collector = None
+    lc_enabled = loadcell_enable_var is not None and loadcell_enable_var.get()
+    if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
+        lc_collector = LoadCellCollector(mcu_protocol)
+        lc_collector.start()
+
+    time_axis = None
+    data = None
+
     try:
-        time_axis, data = Lanxi.SampleChannels(DURATION, on_ready=on_daq_ready)
-    except ConnectionRefusedError as e:
-        recording = False
-        messagebox.showerror("Connection Error", 
-                           "Failed to connect to LAN-XI device.\n\n"
-                           "The device may be busy from a previous recording.\n"
-                           "Attempting to reset the connection...")
-        try:
-            Lanxi.reset_stream()
-            time_axis, data = Lanxi.SampleChannels(DURATION)
-        except Exception as retry_error:
-            messagebox.showerror("Connection Failed", 
-                               f"Could not establish connection after reset.\n\n"
-                               f"Error: {retry_error}\n\n"
-                               f"Try restarting the application or power cycle the LAN-XI device.")
-            return
-    except Exception as e:
-        recording = False
-        messagebox.showerror("Recording Error", f"An error occurred during recording:\n\n{e}")
+        if source == "LAN-XI":
+            try:
+                time_axis, data = Lanxi.SampleChannels(DURATION, on_ready=on_daq_ready)
+            except ConnectionRefusedError:
+                recording = False
+                messagebox.showerror("Connection Error",
+                                   "Failed to connect to LAN-XI device.\n\n"
+                                   "The device may be busy from a previous recording.\n"
+                                   "Attempting to reset the connection...")
+                try:
+                    Lanxi.reset_stream()
+                    time_axis, data = Lanxi.SampleChannels(DURATION)
+                except Exception as retry_error:
+                    messagebox.showerror("Connection Failed",
+                                       f"Could not establish connection after reset.\n\n"
+                                       f"Error: {retry_error}\n\n"
+                                       f"Try restarting the application or power cycle the LAN-XI device.")
+                    return
+            except Exception as e:
+                recording = False
+                messagebox.showerror("Recording Error", f"An error occurred during recording:\n\n{e}")
+                return
+        else:
+            # Focusrite / sounddevice path -- device enumerated at runtime so any model works
+            device_idx = _audio_device_map.get(source)
+            try:
+                sensitivity = float(focusrite_sensitivity_var.get()) if focusrite_sensitivity_var else 1.0
+            except (ValueError, tk.TclError):
+                sensitivity = 1.0
+
+            sr = FOCUSRITE_SAMPLE_RATE
+            n_samples = int(sr * DURATION)
+            try:
+                if on_daq_ready is not None:
+                    on_daq_ready()
+                audio_raw = sd.rec(n_samples, samplerate=sr, channels=1,
+                                   device=device_idx, dtype="float32")
+                sd.wait()
+                ai0 = audio_raw[:, 0].astype(float) * sensitivity
+                time_axis = np.linspace(0, DURATION, n_samples, endpoint=False)
+                # AI1-AI3 not available from Focusrite; stored as NaN to preserve parquet schema
+                data = [ai0,
+                        np.full(n_samples, np.nan),
+                        np.full(n_samples, np.nan),
+                        np.full(n_samples, np.nan)]
+            except Exception as e:
+                recording = False
+                messagebox.showerror("Recording Error", f"Focusrite recording failed:\n\n{e}")
+                return
+    finally:
+        # Always stop LC_LOGGING stream, even on error
+        if lc_collector is not None:
+            lc_t, lc_v = lc_collector.stop()
+            recorded_loadcell = (lc_t, lc_v) if lc_t is not None else None
+        else:
+            recorded_loadcell = None
+
+    if time_axis is None or data is None:
         return
 
-    update_plot(time_axis, data)
+    # Resample load cell onto audio time axis for plotting and storage
+    lc_resampled = None
+    if recorded_loadcell is not None:
+        lc_t, lc_v = recorded_loadcell
+        try:
+            scale = float(loadcell_scale_var.get()) if loadcell_scale_var else 1.0
+        except (ValueError, tk.TclError):
+            scale = 1.0
+        lc_resampled = np.interp(time_axis, lc_t, lc_v * scale,
+                                  left=float("nan"), right=float("nan"))
 
-    global recorded_data, recorded_time_axis
+    update_plot(time_axis, data, lc_resampled)
+
     recorded_data = data
     recorded_time_axis = time_axis
     recording = False
 
-    # Save WAV file for AI0 only
-    max_voltage = 10
-    audio_data = (data[0] / max_voltage * 32767).astype(np.int16)
-    wav.write(OUTPUT_WAV_FILE, SAMPLE_RATE, audio_data)
+    # Write WAV from AI0
+    _sr = SAMPLE_RATE if source == "LAN-XI" else FOCUSRITE_SAMPLE_RATE
+    try:
+        sensitivity = float(focusrite_sensitivity_var.get()) if focusrite_sensitivity_var else 1.0
+    except (ValueError, tk.TclError):
+        sensitivity = 1.0
+    max_v = 10.0 if source == "LAN-XI" else max(sensitivity, 1e-9)
+    audio_int16 = np.nan_to_num(data[0] / max_v * 32767, nan=0).astype(np.int16)
+    wav.write(OUTPUT_WAV_FILE, _sr, audio_int16)
 
-    # Save parquet immediately with all channels (AI0–AI3) so it is
-    # available locally even before uploading to MinIO.
-    save_to_parquet()
+    # Save parquet immediately so it is available locally before MinIO upload
+    save_to_parquet(lc_resampled)
 
     # Make upload button red to indicate data needs to be uploaded
     upload_button.config(bg="red", fg="white")
 
-
-def save_to_parquet():
+def save_to_parquet(lc_resampled=None):
     if recorded_data is not None:
-        # Get all metadata (Excel + additional)
-        metadata = get_all_metadata()
+        source = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
+        _sr = SAMPLE_RATE if source == "LAN-XI" else FOCUSRITE_SAMPLE_RATE
 
-        # Add traditional metadata fields
+        metadata = get_all_metadata()
         metadata.update({
-            "Sample Rate (Hz)": Lanxi.sample_rate if Lanxi is not None else SAMPLE_RATE,
+            "Sample Rate (Hz)": _sr,
+            "Audio Source": source,
         })
 
-        # Add parameter entries
         for param, entry in parameter_entries.items():
             metadata[param] = entry.get()
 
-        df = pd.DataFrame({
+        df_dict = {
             "Time (s)": recorded_time_axis,
             "AI0 (V)": recorded_data[0],
             "AI1 (V)": recorded_data[1],
             "AI2 (V)": recorded_data[2],
-            "AI3 (mV)": recorded_data[3] * 1000
-        })
+            "AI3 (mV)": recorded_data[3] * 1000,
+        }
+        if lc_resampled is not None:
+            df_dict["Load Cell (N)"] = lc_resampled
 
+        df = pd.DataFrame(df_dict)
         df.attrs.update(metadata)
         df.to_parquet(OUTPUT_PARQUET_FILE, index=False)
         print(f"Data saved as {OUTPUT_PARQUET_FILE} with metadata")
@@ -469,10 +628,10 @@ def start_recording():
         threading.Thread(target=record_data, daemon=True).start()
 
 def start_linked_recording(on_daq_ready):
-    """Start a DAQ-linked recording. on_daq_ready() is called from the
-    recording thread the instant the streaming socket connects, so the
-    MCU measurement command fires exactly when data starts flowing."""
-    if not LANXI_AVAILABLE:
+    """Start a DAQ-linked recording. on_daq_ready() fires when data starts flowing
+    (LAN-XI: streaming socket connect; Focusrite: just before sd.rec())."""
+    source = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
+    if source == "LAN-XI" and not LANXI_AVAILABLE:
         messagebox.showerror("LAN-XI Not Available",
                              "No LAN-XI device connected. Check BKDAQ_IP in .env and restart.")
         return
@@ -482,25 +641,30 @@ def start_linked_recording(on_daq_ready):
 
 
 
-def update_plot(time_axis, data, title="Recorded Data"):
+def update_plot(time_axis, data, loadcell=None, title="Recorded Data"):
     ax1.clear()
     ax2.clear()
     ax3.clear()
     ax4.clear()
+    ax5.clear()
     ax1.plot(time_axis, data[0], 'b-', label="AI0")
     ax2.plot(time_axis, data[1], 'r-', label="AI1")
     ax3.plot(time_axis, data[2], 'g-', label="AI2")
     ax4.plot(time_axis, data[3] * 1000, 'm-', label="AI3")
-    ax1.set_ylabel("AI0 Voltage (V)", color="b")
+    ax1.set_ylabel("AI0 (V)", color="b")
     ax1.tick_params(axis="y", labelcolor="b")
     ax1.set_title(title)
-    ax2.set_ylabel("AI1 Voltage (V)", color="r")
+    ax2.set_ylabel("AI1 (V)", color="r")
     ax2.tick_params(axis="y", labelcolor="r")
-    ax3.set_ylabel("AI2 Voltage (V)", color="g")
+    ax3.set_ylabel("AI2 (V)", color="g")
     ax3.tick_params(axis="y", labelcolor="g")
     ax4.set_ylabel("AI3 (mV)", color="m")
     ax4.tick_params(axis="y", labelcolor="m")
-    ax4.set_xlabel("Time (s)")
+    if loadcell is not None:
+        ax5.plot(time_axis, loadcell, color="darkorange", label="Load Cell")
+    ax5.set_ylabel("Load Cell (N)", color="darkorange")
+    ax5.tick_params(axis="y", labelcolor="darkorange")
+    ax5.set_xlabel("Time (s)")
     fig.canvas.draw()
 
 
@@ -585,7 +749,9 @@ def load_sample():
         response = minio_client.get_object(BUCKET_NAME, parquet_key)
         df = pd.read_parquet(io.BytesIO(response.read()))
 
-        update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"], df["AI3 (mV)"] / 1000], title=base_name)
+        lc_col = df["Load Cell (N)"].values if "Load Cell (N)" in df.columns else None
+        update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"], df["AI3 (mV)"] / 1000],
+                    loadcell=lc_col, title=base_name)
         metadata_text.delete("1.0", tk.END)
         for key, val in df.attrs.items():
             metadata_text.insert(tk.END, f"{key}: {val}\n")
@@ -944,6 +1110,35 @@ duration_entry.pack(anchor="e")
 recording_section = tk.LabelFrame(control_frame, text="Recording", padx=5, pady=5)
 recording_section.pack(anchor="e", fill=tk.X, pady=(10, 5))
 
+# Audio source selection
+audio_source_var = tk.StringVar(value="LAN-XI")
+src_row = tk.Frame(recording_section)
+src_row.pack(fill=tk.X, pady=(0, 3))
+tk.Label(src_row, text="Audio source:").pack(side=tk.LEFT)
+audio_source_combo = ttk.Combobox(src_row, textvariable=audio_source_var, width=26, state="readonly")
+audio_source_combo.pack(side=tk.LEFT, padx=(4, 2))
+ttk.Button(src_row, text="Refresh", command=refresh_audio_devices).pack(side=tk.LEFT)
+
+# Focusrite input sensitivity (V / FS)
+sens_row = tk.Frame(recording_section)
+sens_row.pack(fill=tk.X, pady=(0, 3))
+tk.Label(sens_row, text="Sensitivity (V/FS):").pack(side=tk.LEFT)
+focusrite_sensitivity_var = tk.StringVar(value="1.0")
+tk.Entry(sens_row, textvariable=focusrite_sensitivity_var, width=7).pack(side=tk.LEFT, padx=(4, 0))
+
+# Load cell logging (optional, independent of LAN-XI AI channels)
+lc_row = tk.Frame(recording_section)
+lc_row.pack(fill=tk.X, pady=(0, 3))
+loadcell_enable_var = tk.BooleanVar(value=False)
+tk.Checkbutton(lc_row, text="Log load cell (UART)", variable=loadcell_enable_var).pack(side=tk.LEFT)
+loadcell_scale_var = tk.StringVar(value="1.0")
+tk.Label(lc_row, text=" scale:").pack(side=tk.LEFT)
+tk.Entry(lc_row, textvariable=loadcell_scale_var, width=7).pack(side=tk.LEFT, padx=(2, 0))
+tk.Label(lc_row, text="N/unit", fg="gray").pack(side=tk.LEFT, padx=(2, 0))
+
+# Populate audio device list after StringVars are assigned
+refresh_audio_devices()
+
 record_button = tk.Button(recording_section, text="Start Recording", command=start_recording)
 record_button.pack(anchor="e")
 
@@ -1021,10 +1216,13 @@ editor_button = tk.Button(file_section, text="Editor", command=launch_editor)
 editor_button.pack(anchor="e", pady=(10, 0))
 
 
-fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
+fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, figsize=(10, 12), sharex=True)
 fig.tight_layout(pad=3.0)
 canvas = FigureCanvasTkAgg(fig, master=krak_frame)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 root.mainloop()
+
+
+
