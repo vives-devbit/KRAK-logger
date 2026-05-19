@@ -17,22 +17,68 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox, filedialog
 from scipy.signal import find_peaks
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 from signal_processor import SignalProcessor
+
+class WeightedEnsemble(BaseEstimator, ClassifierMixin):
+    def __init__(self, models, feature_lists, weights, classes):
+        self.models       = models
+        self.feature_lists = feature_lists
+        self.weights      = weights
+        self.classes_     = classes
+
+    def fit(self, X, y): return self
+
+    def predict_proba(self, X):
+        result = np.zeros((len(X), len(self.classes_)))
+        cls_list = list(self.classes_)
+        for mdl, feats, w in zip(self.models, self.feature_lists, self.weights):
+            Xf = X.copy()
+            for m in [f for f in feats if f not in Xf.columns]:
+                Xf[m] = 0.0
+            Xf = Xf[feats]
+            proba = mdl.predict_proba(Xf)
+            mdl_cls = list(mdl.classes_)
+            for i, cls in enumerate(cls_list):
+                if cls in mdl_cls:
+                    result[:, i] += proba[:, mdl_cls.index(cls)] * w
+        return result
+
+    def predict(self, X):
+        probas = self.predict_proba(X)
+        return self.classes_[np.argmax(probas, axis=1)]
+
+class WeightedEnsemble_20260505(WeightedEnsemble):
+    pass
+
+class WeightedEnsemble_20260506(WeightedEnsemble):
+    pass
 
 # ---------------------------------------------------------------------------
 # Paths  (relative to this script â†’ mobile cookie crusher/)
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR    = os.path.dirname(os.path.dirname(SCRIPT_DIR))   # mobile cookie crusher/
-STANDALONE_DIR        = os.path.join(BASE_DIR, "standalone_ensemble")
-STANDALONE_DIR_20260505 = os.path.join(BASE_DIR, "standalone_ensemble_20260505")
-STANDALONE_DIR_NOISY = os.path.join(BASE_DIR, "standalone_ensemble_noisy")
-AVAILABLE_MODELS_DICT = {
-    "Standalone Ensemble": STANDALONE_DIR,
-    "Standalone Ensemble 20260505": STANDALONE_DIR_20260505,
-    "Standalone Ensemble Noisy": STANDALONE_DIR_NOISY,
-}
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+
+AVAILABLE_MODELS_DICT = {}
+if os.path.exists(MODELS_DIR):
+    for d in os.listdir(MODELS_DIR):
+        full_path = os.path.join(MODELS_DIR, d)
+        if os.path.isdir(full_path):
+            AVAILABLE_MODELS_DICT[d] = full_path
+
+# Fallback just in case
+if not AVAILABLE_MODELS_DICT:
+    STANDALONE_DIR = os.path.join(BASE_DIR, "standalone_ensemble")
+    STANDALONE_DIR_20260505 = os.path.join(BASE_DIR, "standalone_ensemble_20260505")
+    STANDALONE_DIR_NOISY = os.path.join(BASE_DIR, "standalone_ensemble_noisy")
+    AVAILABLE_MODELS_DICT = {
+        "Standalone Ensemble": STANDALONE_DIR,
+        "Standalone Ensemble 20260505": STANDALONE_DIR_20260505,
+        "Standalone Ensemble Noisy": STANDALONE_DIR_NOISY,
+    }
 
 FEATURE_EXTRACTION_DIR = os.path.join(
     BASE_DIR,
@@ -63,6 +109,7 @@ KNOWN_FILTERS = [
 KNOWN_CONFIGS = {
     "default", "high_res_temporal", "high_res_spectral",
     "speech_standard", "percussive_focus", "balanced",
+    "Tresh_0_Prom_8e-2", "Tresh_1e-2_Prom_8e-2", "Tresh_2e-2_Prom_8e-2", "Tresh_2e-2_Prom_1e-1"
 }
 
 LFCC_ONLY_PREFIXES = (
@@ -105,6 +152,12 @@ def parse_feature(feat_name: str):
 
 
 def load_required_features(model_dir):
+    json_path = os.path.join(model_dir, "elastic_net_model_selected_features.json")
+    if os.path.exists(json_path):
+        import json
+        with open(json_path, "r") as fh:
+            return json.load(fh)
+    
     req_path = os.path.join(model_dir, "required_features.txt")
     with open(req_path, "r") as fh:
         return [ln.strip() for ln in fh if ln.strip()]
@@ -714,7 +767,9 @@ def _update_model_status(*args):
     sel_mdl = feat_model_var.get()
     if sel_mdl in AVAILABLE_MODELS_DICT:
         m_dir = AVAILABLE_MODELS_DICT[sel_mdl]
-        m_path = os.path.join(m_dir, "weighted_ensemble_model.joblib")
+        p1 = os.path.join(m_dir, "weighted_ensemble_model.joblib")
+        p2 = os.path.join(m_dir, "elastic_net_model_pipeline.pkl")
+        m_path = p2 if os.path.exists(p2) else p1
         m_exists = os.path.exists(m_path)
         feat_model_status_var.set(
             f"Model: {'found' if m_exists else 'NOT FOUND'}  ({os.path.basename(m_path)})"
@@ -747,6 +802,36 @@ feat_cancel_btn = tk.Button(
     bg="salmon", state=tk.DISABLED,
 )
 feat_cancel_btn.pack(fill=tk.X, pady=(0, 8))
+
+# -- Audio Normalization ---------------------------------------------------
+norm_frame = tk.LabelFrame(feat_left, text="Audio Normalization", padx=8, pady=6)
+norm_frame.pack(fill=tk.X, pady=(0, 6))
+
+norm_enable_var = tk.BooleanVar(value=True)
+tk.Checkbutton(norm_frame, text="Enable Audio Normalization",
+               variable=norm_enable_var).pack(anchor="w")
+
+_norm_method_row = tk.Frame(norm_frame)
+_norm_method_row.pack(fill=tk.X, pady=(4, 0))
+tk.Label(_norm_method_row, text="Method:", width=10, anchor="w").pack(side=tk.LEFT)
+norm_method_var = tk.StringVar(value="peak")
+norm_method_cb = ttk.Combobox(_norm_method_row, textvariable=norm_method_var,
+                               values=["peak", "rms"], state="readonly", width=8)
+norm_method_cb.pack(side=tk.LEFT)
+
+_norm_target_label_val = tk.Label(norm_frame, text="Target Level:  0.90", anchor="w")
+_norm_target_label_val.pack(anchor="w", pady=(4, 0))
+
+norm_target_var = tk.DoubleVar(value=0.9)
+norm_target_scale = tk.Scale(norm_frame, variable=norm_target_var,
+                              from_=0.1, to=1.0, resolution=0.05,
+                              orient=tk.HORIZONTAL, showvalue=False)
+norm_target_scale.pack(fill=tk.X)
+
+def _update_norm_target_label(*_):
+    _norm_target_label_val.config(text=f"Target Level:  {norm_target_var.get():.2f}")
+
+norm_target_var.trace_add("write", _update_norm_target_label)
 
 # Progress bar
 feat_progress_var = tk.DoubleVar(value=0.0)
@@ -787,10 +872,13 @@ feat_fig.tight_layout(pad=2.0)
 feat_canvas = FigureCanvasTkAgg(feat_fig, master=feat_right)
 feat_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-# Update info when switching to Feature Extraction tab
+# Update info when switching tabs
 def _on_tab_change(event):
-    if notebook.index(notebook.select()) == 1:
+    idx = notebook.index(notebook.select())
+    if idx == 1:
         _update_feat_info()
+    elif idx == 2:
+        _update_deep_info()
 
 notebook.bind("<<NotebookTabChanged>>", _on_tab_change)
 
@@ -1083,7 +1171,10 @@ def _start_extraction():
         messagebox.showerror("Configuration Error", "Selected model directory not found in configuration.")
         return
         
-    m_path = os.path.join(m_dir, "weighted_ensemble_model.joblib")
+    p1 = os.path.join(m_dir, "weighted_ensemble_model.joblib")
+    p2 = os.path.join(m_dir, "elastic_net_model_pipeline.pkl")
+    m_path = p2 if os.path.exists(p2) else p1
+
     if not os.path.exists(m_path):
         messagebox.showerror("Model Not Found", f"Model file not found:\n{m_path}")
         return
@@ -1105,6 +1196,18 @@ def _start_extraction():
     s_idx, e_idx, dur = trim_result
     signal = loaded_df["AI0 (V)"].values[s_idx:e_idx].astype(np.float64)
     sr = sampling_rate_var.get()
+
+    if norm_enable_var.get():
+        _norm_method = norm_method_var.get()
+        _norm_target = norm_target_var.get()
+        if _norm_method == "peak":
+            _peak = np.max(np.abs(signal))
+            if _peak > 0:
+                signal = signal / _peak * _norm_target
+        elif _norm_method == "rms":
+            _rms = np.sqrt(np.mean(signal ** 2))
+            if _rms > 0:
+                signal = signal / _rms * _norm_target
 
     feat_thread = threading.Thread(
         target=_run_extraction_thread,
@@ -1182,38 +1285,6 @@ def _run_extraction_thread(signal, sr, m_dir, m_path):
         from feature_extraction_class import FeatureExtractor  # noqa: F401
         import joblib
 
-        # WeightedEnsemble must be defined before joblib.load
-        from sklearn.base import BaseEstimator, ClassifierMixin
-
-        class WeightedEnsemble(BaseEstimator, ClassifierMixin):
-            def __init__(self, models, feature_lists, weights, classes):
-                self.models       = models
-                self.feature_lists = feature_lists
-                self.weights      = weights
-                self.classes_     = classes
-
-            def fit(self, X, y): return self
-
-            def predict_proba(self, X):
-                result = np.zeros((len(X), len(self.classes_)))
-                cls_list = list(self.classes_)
-                for mdl, feats, w in zip(self.models, self.feature_lists, self.weights):
-                    Xf = X.copy()
-                    for m in [f for f in feats if f not in Xf.columns]:
-                        Xf[m] = 0.0
-                    Xf = Xf[feats]
-                    proba = mdl.predict_proba(Xf)
-                    # reindex sub-model columns to match self.classes_ order
-                    mdl_cls = list(mdl.classes_)
-                    for i, cls in enumerate(cls_list):
-                        if cls in mdl_cls:
-                            result[:, i] += proba[:, mdl_cls.index(cls)] * w
-                return result
-
-            def predict(self, X):
-                probas = self.predict_proba(X)
-                return self.classes_[np.argmax(probas, axis=1)]
-
         if feat_cancel_flag.is_set():
             _feat_progress(0, 1, "Cancelled.")
             return
@@ -1225,10 +1296,19 @@ def _run_extraction_thread(signal, sr, m_dir, m_path):
         # --- Load required features & build extraction plan ---
         required_features = load_required_features(m_dir)
 
-        # Parse each feature â†’ (filter, config_or_None)
+        # Strip channel/normalisation suffix the extractor doesn’t add
+        _req_sfx = ("_AI0_PN", "_AI2_PN")
+        required_features = [
+            next((f[:-len(s)] for s in _req_sfx if f.endswith(s)), f)
+            for f in required_features
+        ]
+
+        # Parse each feature → (filter, config_or_None)
         plan = {}   # filter_name â†’ {"configs": set, "base_needed": bool}
+        base_features_set = set()
         for feat_name in required_features:
-            _, filt, cfg = parse_feature(feat_name)
+            base, filt, cfg = parse_feature(feat_name)
+            base_features_set.add(base)
             if filt is None:
                 continue
             if filt not in plan:
@@ -1275,6 +1355,7 @@ def _run_extraction_thread(signal, sr, m_dir, m_path):
                                f"Base features: {filter_name}  ({call_idx+1}/{n_calls})")
                 feats = extractor.extract_basic_features(
                     filtered, "default", filter_upper_cutoff, "default", "default",
+                    selected_features=base_features_set
                 )
                 for k, v in feats.items():
                     if (not any(k.startswith(p) for p in ALL_SPECTRUM_PREFIXES)
@@ -1293,13 +1374,23 @@ def _run_extraction_thread(signal, sr, m_dir, m_path):
 
                 # The extract_advanced_features method already calls texture, microcrack, 
                 # energy decay, knock impact, short time energy internally!
-                _safe_add(extractor.extract_advanced_features(filtered, "default"))
+                _safe_add(extractor.extract_advanced_features(filtered, "default", selected_features=base_features_set))
                 
-                try: _safe_add(extractor.extract_wavelet_features(filtered))
-                except Exception as e: print(f"Wavelet skipped: {e}")
+                # Only run extremely slow wavelet/fractal extractions if actually required
+                needs_wavelet = any("wavelet" in f for f in required_features)
+                needs_fractal = any("fractal" in f or "dfa" in f or "hfd" in f or "pfd" in f for f in required_features)
                 
-                try: _safe_add(extractor.extract_fractal_features(filtered))
-                except Exception as e: print(f"Fractal skipped: {e}")
+                if needs_wavelet:
+                    try:
+                        print("Starting Wavelet features...")
+                        _safe_add(extractor.extract_wavelet_features(filtered, selected_features=set(required_features)))
+                    except Exception as e: print(f"Wavelet skipped: {e}")
+                
+                if needs_fractal:
+                    try:
+                        print("Starting Fractal features...")
+                        _safe_add(extractor.extract_fractal_features(filtered, selected_features=set(required_features)))
+                    except Exception as e: print(f"Fractal skipped: {e}")
 
                 call_idx += 1
 
@@ -1311,12 +1402,23 @@ def _run_extraction_thread(signal, sr, m_dir, m_path):
 
                 _feat_progress(call_idx, n_calls,
                                f"Config '{config}': {filter_name}  ({call_idx+1}/{n_calls})")
+                               
+                if "Tresh" in config:
+                    mfcc_cfg = "default"
+                    lfcc_cfg = "default"
+                    peak_cfg = config
+                else:
+                    mfcc_cfg = config
+                    lfcc_cfg = config
+                    peak_cfg = "default"
+
                 feats = extractor.extract_basic_features(
                     filtered,
-                    mfcc_chroma_config=config,     # chroma with this config
+                    mfcc_chroma_config=mfcc_cfg,     # chroma with this config
                     filter_upper_cutoff=filter_upper_cutoff,
-                    peak_detection_config="default",
-                    lfcc_config=config,            # LFCC with same config
+                    peak_detection_config=peak_cfg,
+                    lfcc_config=lfcc_cfg,            # LFCC with same config
+                    selected_features=base_features_set
                 )
                 for k, v in feats.items():
                     all_extracted[f"{k}_{filter_name}_{config}"] = v
@@ -1392,7 +1494,17 @@ def _run_extraction_thread(signal, sr, m_dir, m_path):
         pred   = model.predict(df_feat)
         probas = model.predict_proba(df_feat)
 
-        _feat_done(pred[0], probas[0], model.classes_, missing_features)
+        out_pred = pred[0]
+        out_classes = model.classes_
+        
+        # Check for Label Encoder
+        le_path = os.path.join(m_dir, "elastic_net_model_label_encoder.pkl")
+        if os.path.exists(le_path):
+            le = joblib.load(le_path)
+            out_pred = le.inverse_transform([out_pred])[0]
+            out_classes = le.inverse_transform(out_classes)
+
+        _feat_done(out_pred, probas[0], out_classes, missing_features)
 
     except Exception as exc:
         _feat_error(str(exc), _tb.format_exc())
@@ -1402,14 +1514,444 @@ def _run_extraction_thread(signal, sr, m_dir, m_path):
 
 
 # ============================================================================
+# TAB 3 — Deep Predict  (PaSST 10s + 3s ensemble)
+# ============================================================================
+tab_deep = ttk.Frame(notebook)
+notebook.add(tab_deep, text="  Deep Predict  ")
+
+# -- Left control panel ---------------------------------------------------
+deep_left = tk.Frame(tab_deep, width=310)
+deep_left.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0), pady=8)
+deep_left.pack_propagate(False)
+
+# Signal info
+deep_info_frame = tk.LabelFrame(deep_left, text="Current Signal", padx=8, pady=6)
+deep_info_frame.pack(fill=tk.X, pady=(0, 6))
+
+deep_file_var = tk.StringVar(value="No file loaded")
+tk.Label(deep_info_frame, textvariable=deep_file_var,
+         fg="blue", anchor="w", wraplength=270, justify=tk.LEFT).pack(anchor="w")
+
+deep_trim_var = tk.StringVar(value="No trim window set")
+tk.Label(deep_info_frame, textvariable=deep_trim_var,
+         fg="darkgreen", anchor="w", wraplength=270, justify=tk.LEFT).pack(anchor="w")
+
+def _update_deep_info():
+    if loaded_df is not None and loaded_filename is not None:
+        sr = sampling_rate_var.get()
+        n = len(loaded_df)
+        deep_file_var.set(f"File: {loaded_filename}\n{n:,} samples @ {sr} Hz")
+    else:
+        deep_file_var.set("No file loaded")
+    if trim_result is not None:
+        s, e, dur = trim_result
+        deep_trim_var.set(f"Trim: sample {s} → {e}  ({dur:.4f} s)")
+    else:
+        deep_trim_var.set("No trim window — run Preview Trim Window first")
+
+# Models frame
+deep_model_frame = tk.LabelFrame(deep_left, text="PaSST Models", padx=8, pady=6)
+deep_model_frame.pack(fill=tk.X, pady=(0, 6))
+
+# Python interpreter
+tk.Label(deep_model_frame, text="Python interpreter:", anchor="w").pack(anchor="w")
+_py_row = tk.Frame(deep_model_frame); _py_row.pack(fill=tk.X, pady=(0, 4))
+deep_python_var = tk.StringVar(value=sys.executable)
+tk.Entry(_py_row, textvariable=deep_python_var, width=22).pack(side=tk.LEFT, fill=tk.X, expand=True)
+def _browse_python():
+    p = filedialog.askopenfilename(title="Select Python executable",
+                                   filetypes=[("Python", "python*.exe"), ("All", "*.*")])
+    if p: deep_python_var.set(p)
+tk.Button(_py_row, text="…", width=3, command=_browse_python).pack(side=tk.LEFT, padx=(2, 0))
+
+# Model directory
+tk.Label(deep_model_frame, text="Model directory (.pt files):", anchor="w").pack(anchor="w")
+_mdir_row = tk.Frame(deep_model_frame); _mdir_row.pack(fill=tk.X, pady=(0, 4))
+deep_model_dir_var = tk.StringVar(value=MODELS_DIR if os.path.isdir(MODELS_DIR) else SCRIPT_DIR)
+tk.Entry(_mdir_row, textvariable=deep_model_dir_var, width=22).pack(side=tk.LEFT, fill=tk.X, expand=True)
+def _browse_model_dir():
+    d = filedialog.askdirectory(title="Select folder containing .pt checkpoints")
+    if d: deep_model_dir_var.set(d)
+tk.Button(_mdir_row, text="…", width=3, command=_browse_model_dir).pack(side=tk.LEFT, padx=(2, 0))
+
+# Device
+_dev_row = tk.Frame(deep_model_frame)
+_dev_row.pack(fill=tk.X, pady=(0, 4))
+tk.Label(_dev_row, text="Device:", width=10, anchor="w").pack(side=tk.LEFT)
+deep_device_var = tk.StringVar(value="cpu")
+ttk.Combobox(_dev_row, textvariable=deep_device_var,
+             values=["cpu", "cuda"], state="readonly", width=8).pack(side=tk.LEFT)
+
+deep_model_status_var = tk.StringVar(value="Click 'Validate Setup' to test the interpreter")
+tk.Label(deep_model_frame, textvariable=deep_model_status_var,
+         fg="gray", anchor="w", wraplength=270, justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
+
+deep_load_btn = tk.Button(deep_model_frame, text="Validate Setup",
+                          command=lambda: _deep_validate_setup(), bg="lightyellow")
+deep_load_btn.pack(fill=tk.X, pady=(4, 0))
+
+# -- Model selection -------------------------------------------------------
+deep_mdl_frame = tk.LabelFrame(deep_left, text="Model", padx=6, pady=4)
+deep_mdl_frame.pack(fill=tk.X, pady=(0, 6))
+
+_DUR_MAP = {"10s": 320_000, "5s": 160_000, "3s": 96_000, "2s": 64_000}
+
+def _infer_dur(path):
+    name = os.path.basename(path).lower()
+    for k in ("10s", "5s", "3s", "2s"):
+        if k in name:
+            return k
+    return "10s"
+
+deep_mdl_path_var = tk.StringVar(value="")
+deep_mdl_dur_var  = tk.StringVar(value="10s")
+
+# Path row
+_mdl_r1 = tk.Frame(deep_mdl_frame); _mdl_r1.pack(fill=tk.X)
+tk.Entry(_mdl_r1, textvariable=deep_mdl_path_var, width=22).pack(
+    side=tk.LEFT, fill=tk.X, expand=True)
+
+def _deep_browse_model():
+    p = filedialog.askopenfilename(
+        title="Select checkpoint",
+        filetypes=[("PyTorch", "*.pt *.pth"), ("All", "*.*")])
+    if p:
+        deep_mdl_path_var.set(p)
+        deep_mdl_dur_var.set(_infer_dur(p))
+
+tk.Button(_mdl_r1, text="…", width=3,
+          command=_deep_browse_model).pack(side=tk.LEFT, padx=(2, 0))
+
+# Duration row
+_mdl_r2 = tk.Frame(deep_mdl_frame); _mdl_r2.pack(fill=tk.X, pady=(4, 0))
+tk.Label(_mdl_r2, text="Duration:").pack(side=tk.LEFT)
+ttk.Combobox(_mdl_r2, textvariable=deep_mdl_dur_var, values=list(_DUR_MAP.keys()),
+             state="readonly", width=5).pack(side=tk.LEFT, padx=(4, 0))
+tk.Label(_mdl_r2, text="(last N seconds fed to model)",
+         fg="gray", font=tkfont.Font(font=tkfont.nametofont("TkDefaultFont"), size=8)
+         ).pack(side=tk.LEFT, padx=(6, 0))
+
+# Model picker combobox (populated by Scan Dir)
+_mdl_combo_paths = {}   # basename → full path
+deep_mdl_pick_var = tk.StringVar(value="")
+_mdl_combo = ttk.Combobox(deep_mdl_frame, textvariable=deep_mdl_pick_var, state="readonly")
+_mdl_combo.pack(fill=tk.X, pady=(4, 0))
+
+def _mdl_combo_selected(e=None):
+    name = deep_mdl_pick_var.get()
+    if name in _mdl_combo_paths:
+        p = _mdl_combo_paths[name]
+        deep_mdl_path_var.set(p)
+        deep_mdl_dur_var.set(_infer_dur(p))
+
+_mdl_combo.bind("<<ComboboxSelected>>", _mdl_combo_selected)
+
+def _deep_scan_models():
+    mdir = deep_model_dir_var.get().strip()
+    if not os.path.isdir(mdir):
+        messagebox.showwarning("No Directory", "Set the model directory first.")
+        return
+    pts = sorted(f for f in os.listdir(mdir) if f.lower().endswith((".pt", ".pth")))
+    if not pts:
+        messagebox.showinfo("None Found", f"No .pt files in:\n{mdir}")
+        return
+    _mdl_combo_paths.clear()
+    for f in pts:
+        _mdl_combo_paths[f] = os.path.join(mdir, f)
+    _mdl_combo["values"] = pts
+    _mdl_combo.set(pts[0])
+    _mdl_combo_selected()
+
+tk.Button(deep_mdl_frame, text="⟳ Scan Dir",
+          command=_deep_scan_models).pack(fill=tk.X, pady=(4, 0))
+
+# Pre-populate from MODELS_DIR on startup
+_preload_dir = MODELS_DIR if os.path.isdir(MODELS_DIR) else SCRIPT_DIR
+if os.path.isdir(_preload_dir):
+    _pt_files = sorted(f for f in os.listdir(_preload_dir)
+                       if f.lower().endswith((".pt", ".pth")))
+    if _pt_files:
+        for _pt in _pt_files:
+            _mdl_combo_paths[_pt] = os.path.join(_preload_dir, _pt)
+        _mdl_combo["values"] = _pt_files
+        _mdl_combo.set(_pt_files[0])
+        deep_mdl_path_var.set(_mdl_combo_paths[_pt_files[0]])
+        deep_mdl_dur_var.set(_infer_dur(_mdl_combo_paths[_pt_files[0]]))
+
+# Run / Cancel
+deep_predict_btn = tk.Button(
+    deep_left, text="Run Deep Prediction",
+    command=lambda: _deep_start_prediction(),
+    bg="lightgreen", relief=tk.RAISED,
+    font=tkfont.Font(font=tkfont.nametofont("TkDefaultFont"), weight="bold"),
+)
+deep_predict_btn.pack(fill=tk.X, pady=(8, 2))
+
+deep_cancel_btn = tk.Button(
+    deep_left, text="Cancel",
+    command=lambda: _deep_cancel(),
+    bg="salmon", state=tk.DISABLED,
+)
+deep_cancel_btn.pack(fill=tk.X, pady=(0, 8))
+
+# Progress + status
+deep_progress_var = tk.DoubleVar(value=0.0)
+ttk.Progressbar(deep_left, variable=deep_progress_var, maximum=100, length=280).pack(fill=tk.X, pady=(0, 4))
+
+deep_status_var = tk.StringVar(value="Select a model, then run prediction")
+tk.Label(deep_left, textvariable=deep_status_var,
+         fg="gray", anchor="w", wraplength=270, justify=tk.LEFT).pack(anchor="w")
+
+# -- Right results panel --------------------------------------------------
+deep_right = tk.Frame(tab_deep)
+deep_right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+# Prediction result
+deep_pred_frame = tk.LabelFrame(deep_right, text="Prediction", padx=8, pady=8)
+deep_pred_frame.pack(fill=tk.X, pady=(0, 8))
+
+deep_ens_pred_var = tk.StringVar(value="—")
+tk.Label(deep_pred_frame, textvariable=deep_ens_pred_var, fg="steelblue",
+         font=tkfont.Font(font=tkfont.nametofont("TkDefaultFont"), size=20, weight="bold")
+         ).pack(side=tk.LEFT)
+
+# Chart frame — canvas is created/replaced dynamically
+deep_chart_frame = tk.Frame(deep_right)
+deep_chart_frame.pack(fill=tk.BOTH, expand=True)
+deep_canvas = None   # created in _draw_deep_plot
+
+# -- Deep Predict logic ---------------------------------------------------
+_deep_thread      = None
+_deep_cancel_flag = threading.Event()
+
+
+def _draw_deep_plot(result):
+    global deep_canvas
+    # result: {"pred": str, "proba": {class: float}}
+    if deep_canvas is not None:
+        deep_canvas.get_tk_widget().destroy()
+        plt.close("all")
+
+    classes = list(result["proba"].keys())
+    proba   = [result["proba"][c] for c in classes]
+    winner  = result["pred"]
+
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    colors = ["forestgreen" if c == winner else "steelblue" for c in classes]
+    bars = ax.bar(range(len(classes)), proba, color=colors,
+                  edgecolor="black", linewidth=0.5, tick_label=classes)
+    ax.set_ylim(0, 1.15)
+    ax.set_title(f"Prediction:  {winner}", fontsize=12, weight="bold")
+    ax.set_ylabel("Probability", fontsize=9)
+    ax.tick_params(axis="x", labelrotation=20, labelsize=9)
+    for bar, p in zip(bars, proba):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.02,
+                f"{p:.2f}", ha="center", va="bottom", fontsize=9)
+
+    fig.tight_layout(pad=2.0)
+    deep_canvas = FigureCanvasTkAgg(fig, master=deep_chart_frame)
+    deep_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    deep_canvas.draw()
+
+
+def _deep_validate_setup():
+    deep_load_btn.config(state=tk.DISABLED)
+    deep_model_status_var.set("Validating…")
+    deep_status_var.set("Testing Python interpreter…")
+
+    def _worker():
+        import subprocess as _sp
+        py = deep_python_var.get().strip()
+        if not py or not os.path.exists(py):
+            root.after(0, lambda: _deep_validate_fail("Python executable not found: " + py))
+            return
+        try:
+            r = _sp.run([py, "-c", "import torch; import deepaudiox; print('ok')"],
+                        capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                err = (r.stderr.strip().split("\n") or ["unknown error"])[-1]
+                root.after(0, lambda e=err: _deep_validate_fail(e))
+                return
+        except Exception as exc:
+            root.after(0, lambda e=str(exc): _deep_validate_fail(e))
+            return
+        active_path = deep_mdl_path_var.get().strip()
+        all_ok = bool(active_path) and os.path.exists(active_path)
+        ck = (f"{'OK' if all_ok else 'MISSING'}: "
+              f"{os.path.basename(active_path) if active_path else '(no model selected)'}")
+        lines = ["Python OK  (torch + deepaudiox found)", ck]
+        root.after(0, lambda: _deep_validate_ok("\n".join(lines), all_ok))
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _deep_validate_ok(msg, all_ok):
+    deep_model_status_var.set(msg)
+    deep_load_btn.config(state=tk.NORMAL)
+    deep_status_var.set("Setup OK — ready to run prediction" if all_ok
+                        else "Fix missing checkpoints then retry")
+
+
+def _deep_validate_fail(msg):
+    deep_model_status_var.set(f"Validation failed: {msg}")
+    deep_load_btn.config(state=tk.NORMAL)
+    deep_status_var.set("Fix the issue above, then retry")
+    messagebox.showerror("Setup Validation Failed",
+                         f"{msg}\n\nMake sure the selected Python has torch and "
+                         "deepaudiox installed.")
+
+
+def _deep_start_prediction():
+    global _deep_thread
+    if _deep_thread is not None and _deep_thread.is_alive():
+        return
+    if loaded_df is None:
+        messagebox.showwarning("No File", "Please load a parquet file first.")
+        return
+    if trim_result is None:
+        messagebox.showwarning("No Trim",
+                               "Please set a trim window first.\n"
+                               "Go to 'Set Window' and click 'Preview Trim Window'.")
+        return
+    py = deep_python_var.get().strip()
+    if not py or not os.path.exists(py):
+        messagebox.showwarning("Python Not Set",
+                               "Please set the Python interpreter and click 'Validate Setup'.")
+        return
+    mdl_path = deep_mdl_path_var.get().strip()
+    if not mdl_path:
+        messagebox.showwarning("No Model", "Please select a model checkpoint.")
+        return
+    if not os.path.exists(mdl_path):
+        messagebox.showwarning("Model Not Found", f"File not found:\n{mdl_path}")
+        return
+
+    _deep_cancel_flag.clear()
+    deep_predict_btn.config(state=tk.DISABLED)
+    deep_cancel_btn.config(state=tk.NORMAL)
+    deep_progress_var.set(10)
+    deep_status_var.set("Running inference…")
+    deep_ens_pred_var.set("—")
+
+    s_idx, e_idx, _ = trim_result
+    signal = loaded_df["AI0 (V)"].values[s_idx:e_idx].astype(np.float32)
+
+    _deep_thread = threading.Thread(
+        target=_deep_run_thread, args=(signal,), daemon=True
+    )
+    _deep_thread.start()
+
+
+def _deep_cancel():
+    _deep_cancel_flag.set()
+    deep_status_var.set("Cancelling…")
+
+
+def _deep_run_thread(signal):
+    import traceback as _tb, subprocess as _sp, tempfile, json as _json
+    npy_path = None
+    try:
+        py        = deep_python_var.get().strip()
+        dev       = deep_device_var.get()
+        mdl_path  = deep_mdl_path_var.get().strip()
+        n_samples = _DUR_MAP.get(deep_mdl_dur_var.get(), 320_000)
+
+        fd, npy_path = tempfile.mkstemp(suffix=".npy")
+        os.close(fd)
+        np.save(npy_path, signal)
+
+        def _esc(p): return p.replace("\\", "\\\\")
+        sd  = _esc(SCRIPT_DIR)
+        npy = _esc(npy_path)
+        mp  = _esc(mdl_path)
+
+        script = (
+            "import sys, json, numpy as np\n"
+            "import torch, torch.nn.functional as F, scipy.signal\n"
+            f"sys.path.insert(0, '{sd}')\n"
+            "from deepaudiox import AudioClassifier\n"
+            "SRC_SR=65536; TGT_SR=32000\n"
+            "CLASS_NAMES=['type_1','type_2','type_3','type_4','type_5']\n"
+            "def _prep(sig, n):\n"
+            "    rs=scipy.signal.resample(sig,int(len(sig)*TGT_SR/SRC_SR)).astype('float32')\n"
+            "    rs=rs[-n:] if len(rs)>=n else np.concatenate([np.zeros(n-len(rs),'float32'),rs])\n"
+            "    pk=np.max(np.abs(rs));rs=rs/pk if pk>0 else rs\n"
+            "    return torch.tensor(rs).unsqueeze(0)\n"
+            f"signal=np.load('{npy}')\n"
+            f"n={n_samples}\n"
+            f"mdl=AudioClassifier.from_checkpoint('{mp}').to('{dev}'); mdl.eval()\n"
+            "wav=_prep(signal,n)\n"
+            "with torch.no_grad():\n"
+            f"    p=F.softmax(mdl(wav.to('{dev}')),dim=-1).squeeze(0).cpu().numpy()\n"
+            "pred=CLASS_NAMES[int(np.argmax(p))]\n"
+            "print(json.dumps({'pred':pred,'proba':dict(zip(CLASS_NAMES,p.tolist()))}))\n"
+        )
+
+        if _deep_cancel_flag.is_set():
+            root.after(0, _deep_reset_btns); return
+
+        root.after(0, lambda: deep_status_var.set("Loading model & running inference…"))
+        root.after(0, lambda: deep_progress_var.set(30))
+
+        proc = _sp.run([py, "-c", script], capture_output=True, text=True, timeout=300)
+
+        if _deep_cancel_flag.is_set():
+            root.after(0, _deep_reset_btns); return
+
+        if proc.returncode != 0:
+            err = (proc.stderr.strip().split("\n") or ["subprocess failed"])[-1]
+            raise RuntimeError(err)
+
+        out_lines = [l for l in proc.stdout.strip().split("\n") if l.strip()]
+        result = _json.loads(out_lines[-1])
+        root.after(0, lambda r=result: _deep_done(r))
+
+    except Exception as exc:
+        msg, tb = str(exc), _tb.format_exc()
+        root.after(0, lambda: _deep_error(msg, tb))
+    finally:
+        if npy_path and os.path.exists(npy_path):
+            try: os.unlink(npy_path)
+            except Exception: pass
+
+
+def _deep_done(result):
+    deep_predict_btn.config(state=tk.NORMAL)
+    deep_cancel_btn.config(state=tk.DISABLED)
+    deep_progress_var.set(100)
+    deep_ens_pred_var.set(result["pred"])
+    deep_status_var.set(f"Done!  Prediction: {result['pred']}")
+    _draw_deep_plot(result)
+
+
+def _deep_error(msg, tb):
+    deep_predict_btn.config(state=tk.NORMAL)
+    deep_cancel_btn.config(state=tk.DISABLED)
+    deep_progress_var.set(0)
+    deep_status_var.set(f"Error: {msg}")
+    messagebox.showerror("Prediction Error", f"{msg}\n\n{tb[:800]}")
+
+
+def _deep_reset_btns():
+    deep_predict_btn.config(state=tk.NORMAL)
+    deep_cancel_btn.config(state=tk.DISABLED)
+    deep_progress_var.set(0)
+    deep_status_var.set("Cancelled.")
+
+
+# ============================================================================
 # Clean shutdown
 # ============================================================================
 def _on_close():
-    """Stop any running background thread then destroy the window."""
-    global feat_thread
+    """Stop any running background threads then destroy the window."""
+    global feat_thread, _deep_thread
     if feat_thread is not None and feat_thread.is_alive():
         feat_cancel_flag.set()
         feat_thread.join(timeout=2.0)
+    if _deep_thread is not None and _deep_thread.is_alive():
+        _deep_cancel_flag.set()
+        _deep_thread.join(timeout=2.0)
     plt.close("all")
     root.quit()
     root.destroy()
@@ -1421,6 +1963,7 @@ root.protocol("WM_DELETE_WINDOW", _on_close)
 # ============================================================================
 _draw_plot()
 root.mainloop()
+
 
 
 
