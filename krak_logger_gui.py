@@ -49,7 +49,6 @@ audio_source_var = None         # tk.StringVar, assigned during UI init
 audio_source_combo = None       # ttk.Combobox, assigned during UI init
 focusrite_sensitivity_var = None  # tk.StringVar V/FS, assigned during UI init
 loadcell_enable_var = None      # tk.BooleanVar, assigned during UI init
-loadcell_scale_var = None       # tk.StringVar raw->N, assigned during UI init
 
 # Smart .env path detection for both development and executable
 def find_env_file():
@@ -103,51 +102,58 @@ except Exception as _lanxi_err:
 # ---------------------------------------------------------------------------
 
 class LoadCellCollector:
-    """Collects load cell data from MCU during a recording window via ADCSTREAM.
+    """Collects load cell data from MCU via LC_LOGGING at 200 Hz.
 
-    Sends ADCSTREAM 5 (5 ms = 200 Hz) on start(), parses ADC:CURR: lines,
-    then sends ADCSTREAM 0 and returns (time_axis_s, raw_values) on stop().
-    Timestamps are relative to start() using time.perf_counter().
+    Protocol (PC -> MCU): LC_LOGGING START <duration_s>
+    Protocol (MCU -> PC): LC:START, LC:<value> x N, LC:END
+    stop() blocks until LC:END is received so all buffered samples are captured.
     """
-    # MCU firmware: LC_LOGGING START -> LC:<N> lines at 200 Hz; LC_LOGGING STOP to end
 
     def __init__(self, protocol):
         self._proto = protocol
         self._samples = []
-        self._t_start = 0.0
         self._lock = threading.Lock()
+        self._done = threading.Event()
+        self._duration = 0.0
 
-    def start(self):
+    def start(self, duration_s):
+        self._duration = duration_s
         with self._lock:
             self._samples = []
-            self._t_start = time.perf_counter()
+        self._done.clear()
         self._proto.add_callback(self._on_line)
-        self._proto.send("LC_LOGGING START")
+        self._proto.send(f"LC_LOGGING START {int(round(duration_s))}")
 
     def stop(self):
-        """Stop stream. Returns (time_axis_s, raw_values) arrays, or (None, None) if empty."""
-        self._proto.send("LC_LOGGING STOP")
+        """Wait for LC:END from MCU, then return (time_axis_s, raw_values).
+
+        Blocks until the MCU signals LC:END (all samples transmitted) or
+        until a timeout expires (fallback for old firmware without LC:END support).
+        """
+        # MCU flushes its UART buffer after sending LC:END; give it generous time.
+        timeout = self._duration + 10.0
+        self._done.wait(timeout=timeout)
         self._proto.remove_callback(self._on_line)
         with self._lock:
             data = list(self._samples)
         if not data:
             return None, None
-        times = np.array([s[0] for s in data])
-        values = np.array([s[1] for s in data], dtype=float)
+        values = np.array(data, dtype=float)
+        times = np.arange(len(values)) / 200.0
         return times, values
 
     def _on_line(self, line):
-        # Firmware responds to LC_LOGGING START with LC:<value> lines at 200 Hz
-        if not line.startswith("LC:"):
-            return
-        load_str = line[3:].strip()
-        try:
-            val = float(load_str)
-            t_rel = time.perf_counter() - self._t_start
+        if line.strip() == "LC:START":
             with self._lock:
-                self._samples.append((t_rel, val))
-        except ValueError:
-            pass
+                self._samples = []  # reset in case of re-start
+        elif line.strip() == "LC:END":
+            self._done.set()
+        elif line.startswith("LC:"):
+            try:
+                with self._lock:
+                    self._samples.append(float(line[3:].strip()))
+            except ValueError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -366,13 +372,8 @@ def record_data(on_daq_ready=None):
 
     recording = True
 
-    # Optionally start load cell collection via MCU LC_LOGGING (200 Hz, UART)
-    # This is independent of LAN-XI channel logging -- AI1 on LAN-XI is unaffected.
     lc_collector = None
     lc_enabled = loadcell_enable_var is not None and loadcell_enable_var.get()
-    if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
-        lc_collector = LoadCellCollector(mcu_protocol)
-        lc_collector.start()
 
     time_axis = None
     data = None
@@ -380,7 +381,14 @@ def record_data(on_daq_ready=None):
     try:
         if source == "LAN-XI":
             try:
-                time_axis, data = Lanxi.SampleChannels(DURATION, on_ready=on_daq_ready)
+                def _daq_ready_wrapper(orig=on_daq_ready):
+                    nonlocal lc_collector
+                    if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
+                        lc_collector = LoadCellCollector(mcu_protocol)
+                        lc_collector.start(DURATION)
+                    if orig is not None:
+                        orig()
+                time_axis, data = Lanxi.SampleChannels(DURATION, on_ready=_daq_ready_wrapper)
             except ConnectionRefusedError:
                 recording = False
                 messagebox.showerror("Connection Error",
@@ -411,10 +419,14 @@ def record_data(on_daq_ready=None):
             sr = FOCUSRITE_SAMPLE_RATE
             n_samples = int(sr * DURATION)
             try:
-                if on_daq_ready is not None:
-                    on_daq_ready()
                 audio_raw = sd.rec(n_samples, samplerate=sr, channels=1,
                                    device=device_idx, dtype="float32")
+                # Start LC exactly when audio stream opens
+                if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
+                    lc_collector = LoadCellCollector(mcu_protocol)
+                    lc_collector.start(DURATION)
+                if on_daq_ready is not None:
+                    on_daq_ready()
                 sd.wait()
                 ai0 = audio_raw[:, 0].astype(float) * sensitivity
                 time_axis = np.linspace(0, DURATION, n_samples, endpoint=False)
@@ -442,11 +454,7 @@ def record_data(on_daq_ready=None):
     lc_resampled = None
     if recorded_loadcell is not None:
         lc_t, lc_v = recorded_loadcell
-        try:
-            scale = float(loadcell_scale_var.get()) if loadcell_scale_var else 1.0
-        except (ValueError, tk.TclError):
-            scale = 1.0
-        lc_resampled = np.interp(time_axis, lc_t, lc_v * scale,
+        lc_resampled = np.interp(time_axis, lc_t, lc_v,
                                   left=float("nan"), right=float("nan"))
 
     update_plot(time_axis, data, lc_resampled)
@@ -493,7 +501,7 @@ def save_to_parquet(lc_resampled=None):
             "AI3 (mV)": recorded_data[3] * 1000,
         }
         if lc_resampled is not None:
-            df_dict["Load Cell (N)"] = lc_resampled
+            df_dict["Load Cell (mV)"] = lc_resampled
 
         df = pd.DataFrame(df_dict)
         df.attrs.update(metadata)
@@ -642,29 +650,42 @@ def start_linked_recording(on_daq_ready):
 
 
 def update_plot(time_axis, data, loadcell=None, title="Recorded Data"):
-    ax1.clear()
-    ax2.clear()
-    ax3.clear()
-    ax4.clear()
-    ax5.clear()
-    ax1.plot(time_axis, data[0], 'b-', label="AI0")
-    ax2.plot(time_axis, data[1], 'r-', label="AI1")
-    ax3.plot(time_axis, data[2], 'g-', label="AI2")
-    ax4.plot(time_axis, data[3] * 1000, 'm-', label="AI3")
-    ax1.set_ylabel("AI0 (V)", color="b")
-    ax1.tick_params(axis="y", labelcolor="b")
-    ax1.set_title(title)
-    ax2.set_ylabel("AI1 (V)", color="r")
-    ax2.tick_params(axis="y", labelcolor="r")
-    ax3.set_ylabel("AI2 (V)", color="g")
-    ax3.tick_params(axis="y", labelcolor="g")
-    ax4.set_ylabel("AI3 (mV)", color="m")
-    ax4.tick_params(axis="y", labelcolor="m")
-    if loadcell is not None:
-        ax5.plot(time_axis, loadcell, color="darkorange", label="Load Cell")
-    ax5.set_ylabel("Load Cell (N)", color="darkorange")
-    ax5.tick_params(axis="y", labelcolor="darkorange")
-    ax5.set_xlabel("Time (s)")
+    def _has_data(arr):
+        if arr is None:
+            return False
+        a = np.asarray(arr, dtype=float)
+        return a.size > 0 and not np.all(np.isnan(a))
+
+    channels = []
+    if _has_data(data[0]):
+        channels.append(("AI0 (V)",        np.asarray(data[0], dtype=float),           "b"))
+    if _has_data(data[1]):
+        channels.append(("AI1 (V)",        np.asarray(data[1], dtype=float),           "r"))
+    if _has_data(data[2]):
+        channels.append(("AI2 (V)",        np.asarray(data[2], dtype=float),           "g"))
+    if _has_data(data[3]):
+        channels.append(("AI3 (mV)",       np.asarray(data[3], dtype=float) * 1000,   "m"))
+    if _has_data(loadcell):
+        channels.append(("Load Cell (mV)", np.asarray(loadcell, dtype=float),          "darkorange"))
+
+    if not channels:
+        return
+
+    fig.clear()
+    n = len(channels)
+    axes = fig.subplots(n, 1, sharex=True)
+    if n == 1:
+        axes = [axes]
+
+    for i, (ax, (label, values, color)) in enumerate(zip(axes, channels)):
+        ax.plot(time_axis, values, color=color)
+        ax.set_ylabel(label, color=color)
+        ax.tick_params(axis="y", labelcolor=color)
+        if i == 0:
+            ax.set_title(title)
+    axes[-1].set_xlabel("Time (s)")
+
+    fig.tight_layout(pad=2.5)
     fig.canvas.draw()
 
 
@@ -749,7 +770,7 @@ def load_sample():
         response = minio_client.get_object(BUCKET_NAME, parquet_key)
         df = pd.read_parquet(io.BytesIO(response.read()))
 
-        lc_col = df["Load Cell (N)"].values if "Load Cell (N)" in df.columns else None
+        lc_col = df["Load Cell (mV)"].values if "Load Cell (mV)" in df.columns else None
         update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"], df["AI3 (mV)"] / 1000],
                     loadcell=lc_col, title=base_name)
         metadata_text.delete("1.0", tk.END)
@@ -1131,10 +1152,6 @@ lc_row = tk.Frame(recording_section)
 lc_row.pack(fill=tk.X, pady=(0, 3))
 loadcell_enable_var = tk.BooleanVar(value=False)
 tk.Checkbutton(lc_row, text="Log load cell (UART)", variable=loadcell_enable_var).pack(side=tk.LEFT)
-loadcell_scale_var = tk.StringVar(value="1.0")
-tk.Label(lc_row, text=" scale:").pack(side=tk.LEFT)
-tk.Entry(lc_row, textvariable=loadcell_scale_var, width=7).pack(side=tk.LEFT, padx=(2, 0))
-tk.Label(lc_row, text="N/unit", fg="gray").pack(side=tk.LEFT, padx=(2, 0))
 
 # Populate audio device list after StringVars are assigned
 refresh_audio_devices()
@@ -1216,8 +1233,7 @@ editor_button = tk.Button(file_section, text="Editor", command=launch_editor)
 editor_button.pack(anchor="e", pady=(10, 0))
 
 
-fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, figsize=(10, 12), sharex=True)
-fig.tight_layout(pad=3.0)
+fig = plt.figure(figsize=(10, 12))
 canvas = FigureCanvasTkAgg(fig, master=krak_frame)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 

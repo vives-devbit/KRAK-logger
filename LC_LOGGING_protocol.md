@@ -1,53 +1,66 @@
-# LC_LOGGING - MCU Firmware Protocol Specification
+# LC_LOGGING — MCU Firmware Protocol Specification
 
 ## Overview
 
-`LC_LOGGING` is a UART command that streams calibrated load cell readings to the KRAK Logger PC application during a measurement. It runs concurrently with the DAQ recording (LAN-XI or Focusrite) and is independent of all LAN-XI analog input channels (AI0-AI3).
+`LC_LOGGING` is a UART command that streams load cell readings to the KRAK Logger PC
+application during a measurement. It runs concurrently with the DAQ recording and is
+independent of all LAN-XI / Focusrite audio channels.
 
-- **Baud rate:** 115 200, 8N1 (matches all other MCU commands)
-- **Sample rate:** 200 Hz (one line every 5 ms)
-- **Trigger:** sent by the PC at the start of a recording; stopped at the end
+- **Baud rate:** 115 200, 8N1
+- **Sample rate:** 200 Hz (one sample every 5 ms)
+- **Trigger:** sent by PC when the audio stream opens; ends automatically after `<duration_s>`
 
 ---
 
-## Commands (PC to MCU)
+## Commands (PC -> MCU)
 
 | Command | Description |
 |---|---|
-| `LC_LOGGING START` | Begin streaming load cell data at 200 Hz |
-| `LC_LOGGING STOP` | Stop streaming |
+| `LC_LOGGING START <duration_s>\n` | Begin streaming for exactly `<duration_s>` seconds |
+| `LC_LOGGING STOP\n` | Emergency stop (PC cancelled early or error) |
 
-Commands are newline-terminated ASCII strings, consistent with all other KRAK commands.
+`<duration_s>` is a positive integer, e.g. `LC_LOGGING START 14\n` for a 14-second recording.
 
 ---
 
-## Response format (MCU to PC)
-
-While streaming is active the MCU sends one line per sample:
+## Response sequence (MCU -> PC)
 
 ```
-LC:<value>
+LC:START\n                  <- sent once, immediately when the 200 Hz timer starts
+LC:<value>\n                <- one line per sample at 200 Hz
+LC:<value>\n
+  ...  (duration_s * 200 lines total)
+LC:END\n                    <- sent after the last sample is transmitted
 ```
 
-| Field | Type | Example | Notes |
-|---|---|---|---|
-| `LC:` | prefix | - | Fixed identifier |
-| `<value>` | float | `12.34` | Calibrated Newton value |
+| Line | Meaning |
+|---|---|
+| `LC:START` | Timer has started; PC resets its sample buffer |
+| `LC:<float>` | One calibrated sample (raw ADC count or Newton value) |
+| `LC:END` | All samples have been transmitted; PC may now finalise the data |
 
-**Example stream (5 lines):**
+**Example (5 samples, then end):**
 ```
-LC:12.34
-LC:12.41
-LC:12.38
-LC:12.35
-LC:12.40
+LC:START
+LC:567
+LC:572
+LC:580
+LC:578
+LC:591
+LC:END
 ```
 
-### Why calibrated Newtons?
+---
 
-The MCU already stores the two-point calibration constants (`TARE` and `APN` - ADC counts per Newton) in EEPROM, set via the `CALLOAD` commands in the KRAKalyser diagnostics tab. Applying the calibration on the MCU keeps the Python side simple and ensures the stored `"Load Cell (N)"` parquet column always contains physical units without requiring the user to manage a separate calibration constant in the logger UI.
+## Why LC:START and LC:END matter
 
-If the MCU has not been calibrated yet, stream the raw 12-bit ADC value as a float and advise the user to run the calibration procedure first.
+The MCU typically **buffers** outgoing UART data and flushes it in batches. From the PC
+side, all samples may arrive seconds after they were acquired. Without `LC:END` the PC
+cannot know when to stop waiting, and would return partial data. With `LC:END` the PC
+simply blocks until the marker arrives, guaranteeing every sample is captured regardless
+of how the MCU schedules its UART transmissions.
+
+`LC:START` lets the PC reset the buffer in case a previous stream was interrupted.
 
 ---
 
@@ -56,56 +69,80 @@ If the MCU has not been calibrated yet, stream the raw 12-bit ADC value as a flo
 | Requirement | Value |
 |---|---|
 | Nominal interval | 5 ms (200 Hz) |
-| Jitter tolerance | +/- 0.5 ms |
-| Max line latency after sample | < 2 ms |
-
-Use a 5 ms hardware timer interrupt (e.g. TIM6/TIM7 on STM32) to read PA1 (load cell ADC input) and queue the formatted line. Transmit from the main loop or a low-priority interrupt to avoid blocking higher-priority tasks.
+| Jitter tolerance | ± 0.5 ms |
+| `LC:START` latency after command | < 5 ms |
+| `LC:END` sent | after the last sample is **queued** in the UART TX buffer |
 
 ---
 
-## Recommended implementation sketch (STM32 HAL)
+## Recommended STM32 HAL implementation
 
 ```c
-// Timer ISR - fires every 5 ms
-void TIM6_DAC_IRQHandler(void) {
-    HAL_TIM_IRQHandler(&htim6);
-    if (lc_logging_active) {
-        uint32_t adc_raw = read_load_cell_adc();   // PA1, 12-bit
-        float newtons = (adc_raw - tare) / apn;    // apply stored calibration
-        char buf[32];
-        snprintf(buf, sizeof(buf), "LC:%.2f\r\n", newtons);
-        HAL_UART_Transmit_IT(&huart2, (uint8_t*)buf, strlen(buf));
-    }
-}
+static bool     lc_logging_active  = false;
+static uint32_t lc_sample_count    = 0;
+static uint32_t lc_target_samples  = 0;
 
 // Command parser (existing dispatch table)
-else if (strcmp(cmd, "LC_LOGGING START") == 0) {
-    lc_logging_active = true;
-    HAL_TIM_Base_Start_IT(&htim6);
+else if (strncmp(cmd, "LC_LOGGING START", 16) == 0) {
+    uint32_t duration_s = (uint32_t)atoi(cmd + 17);   // parse the integer after "START "
+    lc_target_samples  = duration_s * 200;             // total samples at 200 Hz
+    lc_sample_count    = 0;
+    lc_logging_active  = true;
+    HAL_UART_Transmit(&huart2, (uint8_t*)"LC:START\r\n", 10, HAL_MAX_DELAY);
+    HAL_TIM_Base_Start_IT(&htim6);                     // start 5 ms timer
 }
 else if (strcmp(cmd, "LC_LOGGING STOP") == 0) {
     lc_logging_active = false;
     HAL_TIM_Base_Stop_IT(&htim6);
+    // no LC:END sent on forced stop -- PC will handle timeout
+}
+
+// Timer ISR -- fires every 5 ms
+void TIM6_DAC_IRQHandler(void) {
+    HAL_TIM_IRQHandler(&htim6);
+    if (!lc_logging_active) return;
+
+    if (lc_sample_count >= lc_target_samples) {
+        // All samples acquired -- stop timer and signal end
+        lc_logging_active = false;
+        HAL_TIM_Base_Stop_IT(&htim6);
+        HAL_UART_Transmit_IT(&huart2, (uint8_t*)"LC:END\r\n", 8);
+        return;
+    }
+
+    uint32_t adc_raw = read_load_cell_adc();            // PA1, 12-bit
+    char buf[32];
+    snprintf(buf, sizeof(buf), "LC:%lu\r\n", adc_raw); // raw ADC count
+    // or: snprintf(buf, sizeof(buf), "LC:%.2f\r\n", (adc_raw - tare) / apn); // Newtons
+    HAL_UART_Transmit_IT(&huart2, (uint8_t*)buf, strlen(buf));
+    lc_sample_count++;
 }
 ```
 
-> **Note:** If TIM6 is already used by another peripheral, use any free general-purpose timer configured for a 5 ms overflow.
+> **Note:** `HAL_UART_Transmit_IT` queues the transmission. The MCU may buffer many
+> samples before the UART hardware sends them. `LC:END` is queued after the last sample,
+> so it always arrives at the PC after all sample lines -- regardless of buffering.
 
 ---
 
-## Behaviour during a recording
+## Full sequence diagram
 
 ```
-PC                              MCU
- |-- LC_LOGGING START ---------->|   (sent ~1 ms before audio recording starts)
- |<-- LC:12.34 ------------------|   t = 0 ms
- |<-- LC:12.41 ------------------|   t = 5 ms
- |       ...                     |
- |<-- LC:12.38 ------------------|   t = N*5 ms
- |-- LC_LOGGING STOP ----------->|   (sent immediately after audio stops)
+PC                                      MCU
+ |-- LC_LOGGING START 14 -------------->|   duration = 14 s
+ |<-- LC:START --------------------------|   timer started
+ |<-- LC:567 ----------------------------|   t = 5 ms
+ |<-- LC:572 ----------------------------|   t = 10 ms
+ |          ...  (2800 lines total)      |
+ |<-- LC:591 ----------------------------|   t = 14 000 ms
+ |<-- LC:END ----------------------------|   all samples transmitted
 ```
 
-The PC timestamps each received line relative to the start of the recording using `time.perf_counter()`, then linearly interpolates the 200 Hz load cell trace onto the audio time axis before saving to the parquet file. A latency of a few milliseconds in the `LC_LOGGING START` command is acceptable; it only affects the first few samples at the head of the trace.
+PC behaviour:
+1. Sends `LC_LOGGING START <n>` when the audio stream opens.
+2. Collects all `LC:<value>` lines into a buffer.
+3. Blocks in `stop()` until `LC:END` is received (or a `duration + 10 s` safety timeout).
+4. Reconstructs the time axis as `np.arange(n) / 200.0` -- sample index is the clock.
 
 ---
 
@@ -113,13 +150,14 @@ The PC timestamps each received line relative to the start of the recording usin
 
 | Situation | Expected behaviour |
 |---|---|
-| `LC_LOGGING START` received while already streaming | Reset the stream (restart timer, clear pending TX) |
-| `LC_LOGGING STOP` received while not streaming | No-op, no response needed |
-| Load cell ADC read fails | Omit the line for that sample (do not send `LC:nan`) |
-| MCU reset during logging | PC fills the gap with NaN on interpolation |
+| `LC_LOGGING START` while already streaming | Reset counter, restart timer, re-send `LC:START` |
+| `LC_LOGGING STOP` received mid-stream | Stop immediately; do **not** send `LC:END` |
+| ADC read fails for one sample | Omit that line (skip, do not send `LC:nan`) |
+| PC timeout before `LC:END` | PC returns partial data with `np.arange(n)/200.0` |
 
 ---
 
-## Interaction with existing commands
+## Interaction with other commands
 
-`LC_LOGGING` is independent of `ADCSTREAM`. Both can run simultaneously if needed (e.g. for diagnostics during a recording), but this is not the normal use case. The `ADCSTREAM` command streams both current sense (PA0) and load cell (PA1) raw ADC counts at a user-specified interval for diagnostic purposes and should **not** be used as a substitute for `LC_LOGGING` in production recordings.
+`LC_LOGGING` is independent of `ADCSTREAM`. `ADCSTREAM` streams raw ADC counts for
+diagnostics and must not be used as a substitute for `LC_LOGGING`.
