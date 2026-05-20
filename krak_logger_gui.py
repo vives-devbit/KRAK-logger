@@ -671,8 +671,13 @@ def update_plot(time_axis, data, loadcell=None, title="Recorded Data"):
     if not channels:
         return
 
-    fig.clear()
     n = len(channels)
+    # Scale figure height to number of channels so one channel doesn't fill the window
+    fig_h = min(12.0, max(3.5, n * 2.5))
+    fig.set_size_inches(fig.get_size_inches()[0], fig_h)
+    canvas.get_tk_widget().configure(height=int(fig_h * fig.dpi))
+
+    fig.clear()
     axes = fig.subplots(n, 1, sharex=True)
     if n == 1:
         axes = [axes]
@@ -685,7 +690,7 @@ def update_plot(time_axis, data, loadcell=None, title="Recorded Data"):
             ax.set_title(title)
     axes[-1].set_xlabel("Time (s)")
 
-    fig.tight_layout(pad=2.5)
+    fig.tight_layout(pad=1.5)
     fig.canvas.draw()
 
 
@@ -1233,9 +1238,9 @@ editor_button = tk.Button(file_section, text="Editor", command=launch_editor)
 editor_button.pack(anchor="e", pady=(10, 0))
 
 
-fig = plt.figure(figsize=(10, 12))
+fig = plt.figure(figsize=(10, 4))
 canvas = FigureCanvasTkAgg(fig, master=krak_frame)
-canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.X)
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 root.mainloop()
