@@ -263,6 +263,19 @@ class MeasurementTab(_MCUTab):
             ttk.Label(dur_frame, text="Audio Recording/Measurement Duration (s):").pack(side=tk.LEFT)
             ttk.Entry(dur_frame, textvariable=self._duration_var, width=8).pack(side=tk.LEFT, padx=4)
 
+        ret_frame = ttk.Frame(gf3)
+        ret_frame.pack(anchor="w", pady=(0, 6), fill=tk.X)
+        ttk.Label(ret_frame, text="Retraction Distance (mm):").pack(side=tk.LEFT)
+        self._ret_dist_var = tk.DoubleVar(value=35.0)
+        ttk.Entry(ret_frame, textvariable=self._ret_dist_var, width=8).pack(side=tk.LEFT, padx=4)
+        
+        ttk.Label(ret_frame, text="Speed (mm/s):").pack(side=tk.LEFT, padx=(8, 0))
+        self._ret_spd_var = tk.DoubleVar(value=4.0)
+        ttk.Entry(ret_frame, textvariable=self._ret_spd_var, width=8).pack(side=tk.LEFT, padx=4)
+        
+        self._ret_btn = ttk.Button(ret_frame, text="Set Retraction", state="disabled", command=self._apply_retract)
+        self._ret_btn.pack(side=tk.LEFT, padx=4)
+
         self._log = tk.Text(gf3, height=10, state="disabled", background="#f5f5f5", font=_F()["mono"])
         self._log.pack(fill=tk.BOTH, expand=True)
         sb = ttk.Scrollbar(gf3, command=self._log.yview); sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -391,10 +404,22 @@ class MeasurementTab(_MCUTab):
         except ValueError:
             messagebox.showwarning("Input Error", "Invalid speed value.")
 
+    def _apply_retract(self):
+        try:
+            dist = float(self._ret_dist_var.get())
+            spd = float(self._ret_spd_var.get())
+            if dist < 0 or spd <= 0:
+                raise ValueError
+            self.send(f"SETRETRACT {dist:.1f} {spd:.1f}")
+            _append_log(self._log, f"[{_ts()}] Sent SETRETRACT {dist:.1f} {spd:.1f}\n")
+        except ValueError:
+            messagebox.showwarning("Input Error", "Invalid retraction parameters.")
+
     def on_connect(self):
         self._mf_btn.config(state="normal")
         self._th_btn.config(state="normal")
         self._spd_btn.config(state="normal")
+        self._ret_btn.config(state="normal")
         self._mf_status.config(text="Ready", foreground="gray")
         self._th_status.config(text="Ready", foreground="gray")
 
@@ -402,6 +427,7 @@ class MeasurementTab(_MCUTab):
         self._mf_btn.config(state="disabled")
         self._th_btn.config(state="disabled")
         self._spd_btn.config(state="disabled")
+        self._ret_btn.config(state="disabled")
         self._stop_btn.config(state="disabled")
         self._is_measuring = False
 
