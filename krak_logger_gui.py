@@ -1,4 +1,4 @@
-from HelpFunctions.lanxi import LanXI
+﻿from HelpFunctions.lanxi import LanXI
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -26,7 +26,7 @@ from mcu_tabs import MCUController, _ts, scale_fonts, _F, _parse_field as _mcu_p
 
 # Global variables
 recording = False
-DURATION = 1  # Default duration (can be adjusted)
+DURATION = 15  # Default duration (can be adjusted)
 OUTPUT_WAV_FILE = "recorded_audio.wav"
 OUTPUT_PARQUET_FILE = "recorded_data.parquet"
 BUCKET_NAME = "krak" # Replace with your bucket name
@@ -666,17 +666,12 @@ def update_plot(time_axis, data, loadcell=None, title="Recorded Data"):
     if _has_data(data[3]):
         channels.append(("AI3 (mV)",       np.asarray(data[3], dtype=float) * 1000,   "m"))
     if _has_data(loadcell):
-        channels.append(("Load Cell (mV)", np.asarray(loadcell, dtype=float),          "darkorange"))
+        channels.append(("Load Cell (mV)", np.asarray(loadcell, dtype=float),          "r"))
 
     if not channels:
         return
 
     n = len(channels)
-    # Scale figure height to number of channels so one channel doesn't fill the window
-    fig_h = min(12.0, max(3.5, n * 2.5))
-    fig.set_size_inches(fig.get_size_inches()[0], fig_h)
-    canvas.get_tk_widget().configure(height=int(fig_h * fig.dpi))
-
     fig.clear()
     axes = fig.subplots(n, 1, sharex=True)
     if n == 1:
@@ -1073,7 +1068,7 @@ notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
 krak_frame = ttk.Frame(notebook)
 notebook.add(krak_frame, text="KRAK Logger")
 
-shared_duration_var = tk.StringVar(value="1")
+shared_duration_var = tk.StringVar(value="15")
 
 # MCU tabs – created now so they exist before any connect attempt
 mcu_ctrl = MCUController(notebook, root, mcu_protocol, start_daq=start_linked_recording, duration_var=shared_duration_var)
@@ -1240,10 +1235,11 @@ editor_button.pack(anchor="e", pady=(10, 0))
 
 fig = plt.figure(figsize=(10, 4))
 canvas = FigureCanvasTkAgg(fig, master=krak_frame)
-canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.X)
+canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 root.mainloop()
+
 
 
 

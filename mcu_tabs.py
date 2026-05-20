@@ -1,4 +1,4 @@
-"""MCU controller tab frames for integration into the KRAK Logger notebook.
+﻿"""MCU controller tab frames for integration into the KRAK Logger notebook.
 
 All handle_line() methods are called from the main Tkinter thread (the
 MCUController schedules them via root.after), so direct widget updates are safe.
@@ -149,13 +149,15 @@ class MCUController:
 
     # Called on main thread
     def _dispatch(self, line: str) -> None:
+        is_telemetry = line.startswith("LC:") or line.startswith("AS:")
         for tab in self._tabs:
-            for attr in ("_log", "_rx_log"):
-                if hasattr(tab, attr):
-                    try:
-                        _append_log(getattr(tab, attr), f"[{_ts()}] RAW> {line}\n")
-                    except Exception:
-                        pass
+            if not is_telemetry:
+                for attr in ("_log", "_rx_log"):
+                    if hasattr(tab, attr):
+                        try:
+                            _append_log(getattr(tab, attr), f"[{_ts()}] RAW> {line}\n")
+                        except Exception:
+                            pass
             try:
                 tab.handle_line(line)
             except Exception:
@@ -432,8 +434,8 @@ class PositionTab(_MCUTab):
 
         spd = ttk.Frame(gm); spd.pack(anchor="w")
         ttk.Label(spd, text="Speed (mm/s):").pack(side=tk.LEFT)
-        self._spd_var = tk.IntVar(value=5)
-        self._spd_lbl = ttk.Label(spd, text="5", width=3); self._spd_lbl.pack(side=tk.LEFT, padx=4)
+        self._spd_var = tk.IntVar(value=2)
+        self._spd_lbl = ttk.Label(spd, text="2", width=3); self._spd_lbl.pack(side=tk.LEFT, padx=4)
         self._spd_slider = ttk.Scale(spd, from_=1, to=5, orient=tk.HORIZONTAL,
                                      variable=self._spd_var, length=200,
                                      command=self._on_speed_change)
@@ -1497,3 +1499,4 @@ class DiagnosticsTab(_MCUTab):
         self._adc_ind.config(fg="gray"); self._adc_stream_status.config(text="")
         for timer in ("_ping_after", "_as5600_after", "_eeprom_after"):
             self._cancel_timer(timer)
+
