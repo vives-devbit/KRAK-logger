@@ -52,6 +52,7 @@ audio_source_combo = None       # ttk.Combobox, assigned during UI init
 focusrite_sensitivity_var = None  # tk.StringVar V/FS, assigned during UI init
 loadcell_enable_var = None      # tk.BooleanVar, assigned during UI init
 hp_filter_var = None            # tk.BooleanVar, 1 kHz high-pass on playback
+hp5k_filter_var = None          # tk.BooleanVar, 5 kHz high-pass on playback
 
 # Smart .env path detection for both development and executable
 def find_env_file():
@@ -599,10 +600,13 @@ def upload_to_minio():
 
 
 def _prepare_audio(signal_float, sample_rate):
-    """Normalise to float32 [-1, 1] and optionally apply 1 kHz high-pass filter."""
+    """Normalise to float32 [-1, 1] and optionally apply high-pass filter(s)."""
     audio = signal_float.astype(np.float32)
     if hp_filter_var is not None and hp_filter_var.get():
         sos = butter(4, 1000, btype="highpass", fs=sample_rate, output="sos")
+        audio = sosfilt(sos, audio).astype(np.float32)
+    if hp5k_filter_var is not None and hp5k_filter_var.get():
+        sos = butter(4, 5000, btype="highpass", fs=sample_rate, output="sos")
         audio = sosfilt(sos, audio).astype(np.float32)
     peak = np.max(np.abs(audio))
     if peak > 0:
@@ -1053,6 +1057,9 @@ def _build_mel_tab(notebook, root_win):
     mel_hp_var = tk.BooleanVar(value=False)
     tk.Checkbutton(ctrl, text="1 kHz high-pass filter",
                    variable=mel_hp_var).pack(anchor="w", pady=(10, 0))
+    mel_hp5k_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(ctrl, text="5 kHz high-pass filter",
+                   variable=mel_hp5k_var).pack(anchor="w")
 
     tk.Label(ctrl, text="Mel bands:").pack(anchor="w", pady=(10, 0))
     n_mels_var = tk.IntVar(value=128)
@@ -1074,6 +1081,7 @@ def _build_mel_tab(notebook, root_win):
     def _mel_plot():
         ch     = channel_var.get()
         use_hp = mel_hp_var.get()
+        use_hp5k = mel_hp5k_var.get()
         n_mels = max(32, min(256, n_mels_var.get()))
 
         # --- Gather signal ---
@@ -1100,6 +1108,9 @@ def _build_mel_tab(notebook, root_win):
         if use_hp:
             sos = butter(4, 1000, btype="highpass", fs=sr, output="sos")
             sig = sosfilt(sos, sig).astype(np.float32)
+        if use_hp5k:
+            sos = butter(4, 5000, btype="highpass", fs=sr, output="sos")
+            sig = sosfilt(sos, sig).astype(np.float32)
 
         status_var.set("Computing…")
         root_win.update_idletasks()
@@ -1119,7 +1130,12 @@ def _build_mel_tab(notebook, root_win):
         )
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Mel band")
-        title_suffix = " — HP 1 kHz" if use_hp else ""
+        if use_hp5k:
+            title_suffix = " — HP 5 kHz"
+        elif use_hp:
+            title_suffix = " — HP 1 kHz"
+        else:
+            title_suffix = ""
         ax.set_title(f"Mel Spectrogram – {ch}{title_suffix}")
 
         # Frequency axis ticks
@@ -1314,9 +1330,11 @@ refresh_audio_devices()
 record_button = tk.Button(recording_section, text="Start Recording", command=start_recording)
 record_button.pack(anchor="e")
 
-# High-pass filter toggle
+# High-pass filter toggles
 hp_filter_var = tk.BooleanVar(value=False)
 tk.Checkbutton(recording_section, text="1 kHz high-pass filter", variable=hp_filter_var).pack(anchor="e")
+hp5k_filter_var = tk.BooleanVar(value=False)
+tk.Checkbutton(recording_section, text="5 kHz high-pass filter", variable=hp5k_filter_var).pack(anchor="e")
 
 # Playback buttons
 play_btn_frame = tk.Frame(recording_section)
