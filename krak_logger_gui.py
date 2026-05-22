@@ -1,4 +1,4 @@
-﻿from HelpFunctions.lanxi import LanXI
+from HelpFunctions.lanxi import LanXI
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -23,6 +23,7 @@ import signal
 
 from mcu_protocol import MCUProtocol
 from mcu_tabs import MCUController, _ts, scale_fonts, _F, _parse_field as _mcu_parse_field
+from signal_processing_gui import build_signal_processing_tabs
 
 # Global variables
 recording = False
@@ -1239,6 +1240,7 @@ fig = plt.figure(figsize=(10, 4))
 canvas = FigureCanvasTkAgg(fig, master=krak_frame)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
+build_signal_processing_tabs(notebook, root)
 root.protocol("WM_DELETE_WINDOW", on_closing)
 root.mainloop()
 
