@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.io.wavfile as wav
+from scipy.signal import butter, sosfilt
 import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -50,6 +51,7 @@ audio_source_var = None         # tk.StringVar, assigned during UI init
 audio_source_combo = None       # ttk.Combobox, assigned during UI init
 focusrite_sensitivity_var = None  # tk.StringVar V/FS, assigned during UI init
 loadcell_enable_var = None      # tk.BooleanVar, assigned during UI init
+hp_filter_var = None            # tk.BooleanVar, 1 kHz high-pass on playback
 
 # Smart .env path detection for both development and executable
 def find_env_file():
@@ -596,26 +598,39 @@ def upload_to_minio():
     threading.Thread(target=upload_worker, daemon=True).start()
 
 
+def _prepare_audio(signal_float, sample_rate):
+    """Normalise to float32 [-1, 1] and optionally apply 1 kHz high-pass filter."""
+    audio = signal_float.astype(np.float32)
+    if hp_filter_var is not None and hp_filter_var.get():
+        sos = butter(4, 1000, btype="highpass", fs=sample_rate, output="sos")
+        audio = sosfilt(sos, audio).astype(np.float32)
+    peak = np.max(np.abs(audio))
+    if peak > 0:
+        audio = audio / peak
+    return audio
+
 def play_recorded_audio():
     """Play the recorded audio file from AI0"""
     try:
         if os.path.exists(OUTPUT_WAV_FILE):
-            # Read the WAV file and play it
-            sample_rate, audio_data = wav.read(OUTPUT_WAV_FILE)
-            sd.play(audio_data, sample_rate)
+            sample_rate, raw = wav.read(OUTPUT_WAV_FILE)
+            audio = _prepare_audio(raw.astype(np.float32), sample_rate)
+            sd.play(audio, sample_rate)
         else:
             messagebox.showwarning("No Audio", "No recorded audio file found. Please record audio first.")
     except Exception as e:
         messagebox.showerror("Playback Error", f"Failed to play audio: {str(e)}")
 
+def stop_audio():
+    """Stop any active sounddevice playback."""
+    sd.stop()
+
 def play_ai2_audio():
     """Play the recorded audio from AI2 (accelerometer channel)"""
     try:
         if recorded_data is not None and len(recorded_data) > 2:
-            # Convert AI2 data to audio format
-            max_voltage = 10
-            audio_data = (recorded_data[2] / max_voltage * 32767).astype(np.int16)
-            sd.play(audio_data, SAMPLE_RATE)
+            audio = _prepare_audio(recorded_data[2] / 10.0, SAMPLE_RATE)
+            sd.play(audio, SAMPLE_RATE)
         else:
             messagebox.showwarning("No Audio", "No recorded data found. Please record audio first.")
     except Exception as e:
@@ -625,10 +640,8 @@ def play_ai3_audio():
     """Play the recorded audio from AI3 (HBK 4518 CCLD microphone channel)"""
     try:
         if recorded_data is not None and len(recorded_data) > 3:
-            # Convert AI3 data to audio format (1 Vpeak range for CCLD mic)
-            max_voltage = 1
-            audio_data = (recorded_data[3] / max_voltage * 32767).astype(np.int16)
-            sd.play(audio_data, SAMPLE_RATE)
+            audio = _prepare_audio(recorded_data[3] / 1.0, SAMPLE_RATE)
+            sd.play(audio, SAMPLE_RATE)
         else:
             messagebox.showwarning("No Audio", "No recorded data found. Please record audio first.")
     except Exception as e:
@@ -986,6 +999,145 @@ def on_closing():
     root.quit()  # Stop the mainloop
     root.destroy()  # Destroy the window
 
+
+# ---------------------------------------------------------------------------
+# Mel Spectrogram helpers
+# ---------------------------------------------------------------------------
+
+def _compute_mel_spectrogram(signal, sr, n_mels=128):
+    """Compute mel spectrogram with scipy+numpy; returns (mel_db, times, mel_freqs_hz)."""
+    from scipy.signal import stft as _stft
+    n_fft = 2048
+    hop   = 512
+    _, t, Zxx = _stft(signal, fs=sr, nperseg=n_fft, noverlap=n_fft - hop, window="hann")
+    power = np.abs(Zxx) ** 2
+
+    f_min, f_max = 20.0, sr / 2.0
+    m_min = 2595.0 * np.log10(1 + f_min / 700.0)
+    m_max = 2595.0 * np.log10(1 + f_max / 700.0)
+    mel_pts = np.linspace(m_min, m_max, n_mels + 2)
+    hz_pts  = 700.0 * (10.0 ** (mel_pts / 2595.0) - 1.0)
+    bins    = np.floor((n_fft + 1) * hz_pts / sr).astype(int)
+    n_bins  = n_fft // 2 + 1
+
+    fbank = np.zeros((n_mels, n_bins))
+    for m in range(1, n_mels + 1):
+        lo, ctr, hi = bins[m - 1], bins[m], bins[m + 1]
+        if ctr > lo:
+            for k in range(lo, ctr):
+                fbank[m - 1, k] = (k - lo) / (ctr - lo)
+        if hi > ctr:
+            for k in range(ctr, hi):
+                fbank[m - 1, k] = (hi - k) / (hi - ctr)
+
+    mel_spec = fbank @ power
+    mel_db   = 10.0 * np.log10(np.maximum(mel_spec, 1e-10))
+    return mel_db, t, hz_pts[1:-1]
+
+
+def _build_mel_tab(notebook, root_win):
+    """Add a Mel Spectrogram tab to notebook."""
+    tab = ttk.Frame(notebook)
+    notebook.add(tab, text="Mel Spectrogram")
+
+    # --- Left control panel ---
+    ctrl = tk.Frame(tab, width=200)
+    ctrl.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
+    ctrl.pack_propagate(False)
+
+    tk.Label(ctrl, text="Channel:").pack(anchor="w")
+    channel_var = tk.StringVar(value="AI0")
+    for ch in ("AI0", "AI2", "AI3 Mic"):
+        tk.Radiobutton(ctrl, text=ch, variable=channel_var, value=ch).pack(anchor="w")
+
+    mel_hp_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(ctrl, text="1 kHz high-pass filter",
+                   variable=mel_hp_var).pack(anchor="w", pady=(10, 0))
+
+    tk.Label(ctrl, text="Mel bands:").pack(anchor="w", pady=(10, 0))
+    n_mels_var = tk.IntVar(value=128)
+    tk.Spinbox(ctrl, from_=32, to=256, increment=16,
+               textvariable=n_mels_var, width=6).pack(anchor="w")
+
+    tk.Button(ctrl, text="Plot", command=lambda: _mel_plot(),
+              bg="lightblue", width=14).pack(anchor="w", pady=(14, 0))
+
+    status_var = tk.StringVar(value="Load a recording, then click Plot.")
+    tk.Label(ctrl, textvariable=status_var, fg="gray",
+             wraplength=180, justify="left").pack(anchor="w", pady=(8, 0))
+
+    # --- Matplotlib figure ---
+    fig_mel = plt.figure(figsize=(9, 4))
+    canvas_mel = FigureCanvasTkAgg(fig_mel, master=tab)
+    canvas_mel.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    def _mel_plot():
+        ch     = channel_var.get()
+        use_hp = mel_hp_var.get()
+        n_mels = max(32, min(256, n_mels_var.get()))
+
+        # --- Gather signal ---
+        sig, sr = None, None
+        if ch == "AI0":
+            if not os.path.exists(OUTPUT_WAV_FILE):
+                status_var.set("No WAV file found."); return
+            sr, raw = wav.read(OUTPUT_WAV_FILE)
+            sig = raw.astype(np.float32)
+            if sig.ndim > 1:
+                sig = sig[:, 0]
+        elif ch == "AI2":
+            if recorded_data is None or len(recorded_data) <= 2:
+                status_var.set("No AI2 data."); return
+            sig = (recorded_data[2] / 10.0).astype(np.float32)
+            sr  = SAMPLE_RATE
+        else:
+            if recorded_data is None or len(recorded_data) <= 3:
+                status_var.set("No AI3 data."); return
+            sig = recorded_data[3].astype(np.float32)
+            sr  = SAMPLE_RATE
+
+        # --- Optional high-pass ---
+        if use_hp:
+            sos = butter(4, 1000, btype="highpass", fs=sr, output="sos")
+            sig = sosfilt(sos, sig).astype(np.float32)
+
+        status_var.set("Computing…")
+        root_win.update_idletasks()
+
+        try:
+            mel_db, t, mel_hz = _compute_mel_spectrogram(sig, sr, n_mels)
+        except Exception as exc:
+            status_var.set(f"Error: {exc}"); return
+
+        # --- Draw ---
+        fig_mel.clf()
+        ax = fig_mel.add_subplot(111)
+        im = ax.imshow(
+            mel_db, aspect="auto", origin="lower",
+            extent=[t[0], t[-1], 0, n_mels],
+            cmap="inferno",
+        )
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Mel band")
+        title_suffix = " — HP 1 kHz" if use_hp else ""
+        ax.set_title(f"Mel Spectrogram – {ch}{title_suffix}")
+
+        # Frequency axis ticks
+        tick_hz = [100, 500, 1000, 2000, 5000, 10000, 20000]
+        valid   = [f for f in tick_hz if mel_hz[0] <= f <= mel_hz[-1]]
+        idx     = [float(np.searchsorted(mel_hz, f)) for f in valid]
+        ax.set_yticks(idx)
+        ax.set_yticklabels([f"{f//1000}k" if f >= 1000 else str(f) for f in valid])
+
+        fig_mel.colorbar(im, ax=ax, label="dB")
+        fig_mel.tight_layout(pad=2.0)
+        canvas_mel.draw()
+        status_var.set(
+            f"Done — {mel_db.shape[1]} frames × {n_mels} mel bands"
+        )
+
+    return tab
+
 # Create the GUI
 root = tk.Tk()
 root.title("KRAK Suite – LAN-XI Recorder + MCU Controller")
@@ -1162,14 +1314,21 @@ refresh_audio_devices()
 record_button = tk.Button(recording_section, text="Start Recording", command=start_recording)
 record_button.pack(anchor="e")
 
-play_button = tk.Button(recording_section, text="Play AI0 Audio", command=play_recorded_audio)
-play_button.pack(anchor="e")
+# High-pass filter toggle
+hp_filter_var = tk.BooleanVar(value=False)
+tk.Checkbutton(recording_section, text="1 kHz high-pass filter", variable=hp_filter_var).pack(anchor="e")
 
-play_ai2_button = tk.Button(recording_section, text="Play AI2 Audio", command=play_ai2_audio)
-play_ai2_button.pack(anchor="e")
-
-play_ai3_button = tk.Button(recording_section, text="Play AI3 Mic Audio", command=play_ai3_audio)
-play_ai3_button.pack(anchor="e")
+# Playback buttons
+play_btn_frame = tk.Frame(recording_section)
+play_btn_frame.pack(anchor="e", fill=tk.X)
+play_button = tk.Button(play_btn_frame, text="Play AI0", command=play_recorded_audio)
+play_button.pack(side=tk.LEFT)
+play_ai2_button = tk.Button(play_btn_frame, text="Play AI2", command=play_ai2_audio)
+play_ai2_button.pack(side=tk.LEFT, padx=(4, 0))
+play_ai3_button = tk.Button(play_btn_frame, text="Play AI3 Mic", command=play_ai3_audio)
+play_ai3_button.pack(side=tk.LEFT, padx=(4, 0))
+stop_button = tk.Button(play_btn_frame, text="Stop", command=stop_audio, fg="red")
+stop_button.pack(side=tk.LEFT, padx=(4, 0))
 
 upload_button = tk.Button(recording_section, text="Upload to MinIO", command=upload_to_minio)
 upload_button.pack(anchor="e")
@@ -1241,6 +1400,7 @@ canvas = FigureCanvasTkAgg(fig, master=krak_frame)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
 build_signal_processing_tabs(notebook, root)
+_build_mel_tab(notebook, root)
 root.protocol("WM_DELETE_WINDOW", on_closing)
 root.mainloop()
 
