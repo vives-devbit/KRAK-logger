@@ -163,6 +163,8 @@ class LoadCellCollector:
 def list_audio_input_devices():
     """Return list of (index, name) for all input-capable audio devices."""
     try:
+        sd._terminate()
+        sd._initialize()
         return [(i, d['name']) for i, d in enumerate(sd.query_devices())
                 if d['max_input_channels'] > 0]
     except Exception:
