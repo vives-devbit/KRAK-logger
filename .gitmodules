@@ -1,0 +1,3 @@
+[submodule "feature_extraction"]
+	path = feature_extraction
+	url = https://github.com/vives-mechatronics/KRAK-feature-extraction-submodule.git
