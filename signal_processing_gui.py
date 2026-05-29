@@ -1,4 +1,4 @@
-"""KRAK Signal Processing GUI â€” Set Window / Trim / Feature Extraction"""
+﻿"""KRAK Signal Processing GUI Ã¢â‚¬â€ Set Window / Trim / Feature Extraction"""
 
 import io
 import json
@@ -56,7 +56,7 @@ class WeightedEnsemble_20260506(WeightedEnsemble):
     pass
 
 # ---------------------------------------------------------------------------
-# Paths  (relative to this script â†’ mobile cookie crusher/)
+# Paths  (relative to this script Ã¢â€ â€™ mobile cookie crusher/)
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR    = os.path.dirname(os.path.dirname(SCRIPT_DIR))   # mobile cookie crusher/
@@ -80,12 +80,7 @@ if not AVAILABLE_MODELS_DICT:
         "Standalone Ensemble Noisy": STANDALONE_DIR_NOISY,
     }
 
-FEATURE_EXTRACTION_DIR = os.path.join(
-    BASE_DIR,
-    "KRAK-signal-processing-main",
-    "KRAK-signal-processing-main",
-    "feature_extraction",
-)
+FEATURE_EXTRACTION_DIR = os.path.join(SCRIPT_DIR, "feature_extraction")
 
 # ---------------------------------------------------------------------------
 # Feature-extraction parsing constants
@@ -202,7 +197,7 @@ DEFAULT_CONFIG = {
     "DROP_MEASUREMENT_PERIOD": 10.0,
     "DROP_SEARCH_WINDOW_BEFORE": 0.2,
     "DROP_SEARCH_WINDOW_AFTER": 0.2,
-    # Filter (off by default here â€” no filter_helper wired up)
+    # Filter (off by default here Ã¢â‚¬â€ no filter_helper wired up)
     "ENABLE_FILTER": False,
     "FILTER_PARAMS": {},
     "FILTER_CHAIN": [],
@@ -238,7 +233,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     notebook = parent_notebook
 
     # ---------------------------------------------------------------------------
-    # Font size â€” applies to all widgets via the named system fonts
+    # Font size Ã¢â‚¬â€ applies to all widgets via the named system fonts
     # ---------------------------------------------------------------------------
     _DEFAULT_FONT_SIZE = 15
 
@@ -268,10 +263,10 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     notebook.add(tab_feat, text="  Feature Extraction  ")
 
     # ============================================================================
-    # TAB 1 â€” Set Window
+    # TAB 1 Ã¢â‚¬â€ Set Window
     # ============================================================================
 
-    # â”€â”€ Scrollable left panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Scrollable left panel Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     _paned = tk.PanedWindow(tab_signal, orient=tk.HORIZONTAL, sashwidth=6, sashrelief=tk.RAISED, sashpad=2)
     _paned.pack(fill=tk.BOTH, expand=True)
 
@@ -302,15 +297,15 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
     left_frame.bind_all("<MouseWheel>", _on_mousewheel)
 
-    # â”€â”€ Right panel (plot) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Right panel (plot) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     right_frame = tk.Frame(_paned)
     _paned.add(right_frame, minsize=400, stretch="always")
 
     # ============================================================================
-    # LEFT PANEL â€” controls
+    # LEFT PANEL Ã¢â‚¬â€ controls
     # ============================================================================
 
-    # â”€â”€ Font size control â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Font size control Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     font_row = tk.Frame(left_frame)
     font_row.pack(fill=tk.X, pady=(0, 6))
     tk.Label(font_row, text="Font Size:").pack(side=tk.LEFT)
@@ -320,7 +315,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     font_spinbox.bind("<Return>", _apply_font_size)
     font_spinbox.bind("<FocusOut>", _apply_font_size)
 
-    # â”€â”€ Section: File loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Section: File loading Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     file_frame = tk.LabelFrame(left_frame, text="Load Parquet File (saved by KRAK Logger)", padx=8, pady=6)
     file_frame.pack(fill=tk.X, pady=(0, 6))
 
@@ -367,14 +362,14 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     tk.Label(file_frame, textvariable=file_label_var,
              fg="blue", anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-    # â”€â”€ Section: Sampling rate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Section: Sampling rate Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     sr_frame = tk.Frame(left_frame)
     sr_frame.pack(fill=tk.X, pady=(0, 4))
     tk.Label(sr_frame, text="Sampling Rate (Hz):").pack(side=tk.LEFT)
     sampling_rate_var = tk.IntVar(value=DEFAULT_CONFIG["SAMPLING_RATE"])
     tk.Entry(sr_frame, textvariable=sampling_rate_var, width=8).pack(side=tk.LEFT, padx=4)
 
-    # â”€â”€ Section: Trim method â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Section: Trim method Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     trim_frame = tk.LabelFrame(left_frame, text="Trimming Method", padx=8, pady=6)
     trim_frame.pack(fill=tk.X, pady=(0, 6))
 
@@ -384,7 +379,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                                      values=TRIM_METHODS, state="readonly", width=22)
     trim_method_combo.pack(anchor="w")
 
-    # â”€â”€ Peak Force params â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Peak Force params Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     pf_frame = tk.LabelFrame(left_frame, text="Peak Force Parameters", padx=8, pady=6)
 
     pf_before_var = tk.DoubleVar(value=DEFAULT_CONFIG["PEAK_FORCE_TIME_BEFORE"])
@@ -400,7 +395,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                                orient=tk.HORIZONTAL, variable=pf_after_var, length=160)
     pf_after_scale.pack(side=tk.LEFT)
 
-    # â”€â”€ Threshold params â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Threshold params Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     thresh_frame = tk.LabelFrame(left_frame, text="Threshold Parameters", padx=8, pady=6)
 
     thresh_start_var = tk.DoubleVar(value=DEFAULT_CONFIG["START_THRESHOLD"])
@@ -423,7 +418,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
         tk.Scale(_r, from_=lo, to=hi, resolution=res, orient=tk.HORIZONTAL,
                  variable=var, length=150).pack(side=tk.LEFT)
 
-    # â”€â”€ Threshold % params â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Threshold % params Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     thresh_pct_frame = tk.LabelFrame(left_frame, text="Threshold % Parameters", padx=8, pady=6)
 
     thresh_pct_start_var = tk.DoubleVar(value=DEFAULT_CONFIG["START_THRESHOLD_PCT"])
@@ -444,7 +439,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
         tk.Scale(_r, from_=lo, to=hi, resolution=res, orient=tk.HORIZONTAL,
                  variable=var, length=150).pack(side=tk.LEFT)
 
-    # â”€â”€ Threshold to Peak params â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Threshold to Peak params Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     t2p_frame = tk.LabelFrame(left_frame, text="Threshold to Peak Parameters", padx=8, pady=6)
 
     t2p_thresh_var = tk.DoubleVar(value=DEFAULT_CONFIG["THRESHOLD_TO_PEAK_THRESHOLD"])
@@ -481,7 +476,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     # Show default method params immediately
     _update_trim_method_ui()
 
-    # â”€â”€ Section: Peak-Based Fine Tuning â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Section: Peak-Based Fine Tuning Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     peak_ft_frame = tk.LabelFrame(left_frame, text="Peak-Based Fine Tuning", padx=8, pady=6)
     peak_ft_frame.pack(fill=tk.X, pady=(0, 6))
 
@@ -511,7 +506,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                                      values=PEAK_METHODS, state="readonly", width=28)
     peak_method_combo.pack(side=tk.LEFT, padx=4)
 
-    # â”€â”€ First-to-Last Peak params â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ First-to-Last Peak params Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     ftlp_frame = tk.Frame(peak_ft_frame)
 
     ftlp_before_var = tk.DoubleVar(value=DEFAULT_CONFIG["EXTRA_TIME_BEFORE_FIRST_PEAK_MS"])
@@ -527,7 +522,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     tk.Scale(_r, from_=0.0, to=500.0, resolution=5.0, orient=tk.HORIZONTAL,
              variable=ftlp_after_var, length=150).pack(side=tk.LEFT)
 
-    # â”€â”€ Sliding Window / Center Peak params â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Sliding Window / Center Peak params Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     sw_frame = tk.Frame(peak_ft_frame)
 
     sw_left_var = tk.DoubleVar(value=DEFAULT_CONFIG["PEAK_WINDOW_LEFT"])
@@ -550,7 +545,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     tk.Scale(sw_stride_row, from_=0.005, to=0.05, resolution=0.005, orient=tk.HORIZONTAL,
              variable=sw_stride_var, length=150).pack(side=tk.LEFT)
 
-    # â”€â”€ Fine-Tuned Drop Detection params â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Fine-Tuned Drop Detection params Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     ftdd_frame = tk.Frame(peak_ft_frame)
 
     ftdd_period_var = tk.DoubleVar(value=DEFAULT_CONFIG["DROP_MEASUREMENT_PERIOD"])
@@ -607,7 +602,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     refine_var.trace_add("write", _update_peak_refinement_ui)
     peak_method_var.trace_add("write", _update_peak_method_ui)
 
-    # â”€â”€ Section: find_peaks Parameters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Section: find_peaks Parameters Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     fp_frame = tk.LabelFrame(left_frame, text="find_peaks Parameters (scipy)", padx=8, pady=6)
 
     # Height
@@ -659,7 +654,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     # Show initial peak method params
     _update_peak_method_ui()
 
-    # â”€â”€ Buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Buttons Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     btn_frame = tk.Frame(left_frame)
     btn_frame.pack(fill=tk.X, pady=(6, 4))
 
@@ -709,13 +704,13 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     reset_btn = tk.Button(btn_frame, text="Reset Defaults", command=reset_to_defaults, width=14)
     reset_btn.pack(side=tk.LEFT)
 
-    # â”€â”€ Status label â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    status_var = tk.StringVar(value="Ready â€” load a parquet file to begin")
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Status label Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    status_var = tk.StringVar(value="Ready Ã¢â‚¬â€ load a parquet file to begin")
     tk.Label(left_frame, textvariable=status_var,
              fg="blue", relief=tk.SUNKEN, anchor="w").pack(fill=tk.X, pady=(4, 0))
 
     # ============================================================================
-    # RIGHT PANEL â€” matplotlib figure
+    # RIGHT PANEL Ã¢â‚¬â€ matplotlib figure
     # ============================================================================
     fig, axes = plt.subplots(4, 1, figsize=(9, 9), sharex=True)
     fig.tight_layout(pad=2.5)
@@ -724,10 +719,10 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     canvas_fig.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     # ============================================================================
-    # TAB 2 â€” Feature Extraction
+    # TAB 2 Ã¢â‚¬â€ Feature Extraction
     # ============================================================================
 
-    # â”€â”€ Left control panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Left control panel Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     feat_left = tk.Frame(tab_feat, width=310)
     feat_left.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0), pady=8)
     feat_left.pack_propagate(False)
@@ -834,11 +829,11 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     feat_progress_var = tk.DoubleVar(value=0.0)
     ttk.Progressbar(feat_left, variable=feat_progress_var, maximum=100, length=280).pack(fill=tk.X, pady=(0, 4))
 
-    feat_status_var = tk.StringVar(value="Ready â€” load a file and set trim window first")
+    feat_status_var = tk.StringVar(value="Ready Ã¢â‚¬â€ load a file and set trim window first")
     tk.Label(feat_left, textvariable=feat_status_var,
              fg="gray", anchor="w", wraplength=270, justify=tk.LEFT).pack(anchor="w", pady=(0, 8))
 
-    # â”€â”€ Right results panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Right results panel Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     feat_right = tk.Frame(tab_feat)
     feat_right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=8, pady=8)
 
@@ -846,7 +841,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     feat_pred_frame = tk.LabelFrame(feat_right, text="Prediction", padx=8, pady=8)
     feat_pred_frame.pack(fill=tk.X, pady=(0, 8))
 
-    feat_class_var = tk.StringVar(value="â€”")
+    feat_class_var = tk.StringVar(value="Ã¢â‚¬â€")
     feat_class_label = tk.Label(
         feat_pred_frame, textvariable=feat_class_var,
         font=tkfont.Font(font=tkfont.nametofont("TkDefaultFont"), size=28, weight="bold"),
@@ -889,12 +884,12 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
         if trim_result is not None:
             s, e, dur = trim_result
-            feat_trim_var.set(f"Trim: sample {s} â†’ {e}  ({dur:.4f} s)")
+            feat_trim_var.set(f"Trim: sample {s} Ã¢â€ â€™ {e}  ({dur:.4f} s)")
         else:
-            feat_trim_var.set("No trim window â€” run Preview Trim Window first")
+            feat_trim_var.set("No trim window Ã¢â‚¬â€ run Preview Trim Window first")
 
     # ============================================================================
-    # Logic â€” Set Window
+    # Logic Ã¢â‚¬â€ Set Window
     # ============================================================================
 
     def _build_config() -> dict:
@@ -1001,13 +996,13 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
             if len(trimmed) == 0:
                 messagebox.showwarning("Empty Trim",
-                                       "Trim returned an empty signal â€” adjust parameters.")
+                                       "Trim returned an empty signal Ã¢â‚¬â€ adjust parameters.")
                 return
 
             duration_s = len(trimmed) / sr
             trim_result = (s, e, duration_s)
             status_var.set(
-                f"Trim window ({tm}): sample {s} â†’ {e}  |  {duration_s:.4f} s"
+                f"Trim window ({tm}): sample {s} Ã¢â€ â€™ {e}  |  {duration_s:.4f} s"
             )
 
             # Peak-based refinement (First-to-Last Peak): narrow trim window to acoustic peaks
@@ -1129,7 +1124,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
 
     # ============================================================================
-    # Logic â€” Feature Extraction
+    # Logic Ã¢â‚¬â€ Feature Extraction
     # ============================================================================
 
     def _draw_proba_plot(classes, proba):
@@ -1183,9 +1178,9 @@ def build_signal_processing_tabs(parent_notebook, root_window):
         feat_cancel_flag.clear()
         feat_extract_btn.config(state=tk.DISABLED)
         feat_cancel_btn.config(state=tk.NORMAL)
-        feat_status_var.set("Starting feature extractionâ€¦")
+        feat_status_var.set("Starting feature extractionÃ¢â‚¬Â¦")
         feat_progress_var.set(0)
-        feat_class_var.set("â€”")
+        feat_class_var.set("Ã¢â‚¬â€")
         feat_conf_var.set("")
         feat_missing_var.set("")
         feat_missing_label.config(fg="gray")
@@ -1216,7 +1211,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
     def _cancel_extraction():
         feat_cancel_flag.set()
-        feat_status_var.set("Cancellingâ€¦")
+        feat_status_var.set("CancellingÃ¢â‚¬Â¦")
 
 
     def _feat_progress(current, total, msg):
@@ -1240,11 +1235,11 @@ def build_signal_processing_tabs(parent_notebook, root_window):
         feat_cancel_btn.config(state=tk.DISABLED)
         feat_progress_var.set(100)
         top_prob = float(max(proba))
-        n_total = len(classes)  # approximate — use required feature count if available
+        n_total = len(classes)  # approximate â€” use required feature count if available
         if missing:
             warn = f"WARNING: {len(missing)} features zero-padded  |  Done: {pred_class} ({top_prob:.1%})"
             feat_status_var.set(warn)
-            feat_missing_var.set(f"{len(missing)} features missing (zero-padded) — prediction may be unreliable!\n"
+            feat_missing_var.set(f"{len(missing)} features missing (zero-padded) â€” prediction may be unreliable!\n"
                                  + ", ".join(missing[:10]) + ("..." if len(missing) > 10 else ""))
             feat_missing_label.config(fg="red")
         else:
@@ -1278,7 +1273,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
             if m_dir not in sys.path:
                 sys.path.insert(0, m_dir)
 
-            _feat_progress(0, 1, "Importing librariesâ€¦")
+            _feat_progress(0, 1, "Importing librariesÃ¢â‚¬Â¦")
             from feature_extraction_class import FeatureExtractor  # noqa: F401
             import joblib
 
@@ -1287,21 +1282,21 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                 return
 
             # --- Initialise extractor ---
-            _feat_progress(0, 1, "Initialising extractorâ€¦")
+            _feat_progress(0, 1, "Initialising extractorÃ¢â‚¬Â¦")
             extractor = FeatureExtractor(acoustic_column="AI0 (V)", sampling_rate=sr)
 
             # --- Load required features & build extraction plan ---
             required_features = load_required_features(m_dir)
 
-            # Strip channel/normalisation suffix the extractor doesn’t add
+            # Strip channel/normalisation suffix the extractor doesnâ€™t add
             _req_sfx = ("_AI0_PN", "_AI2_PN")
             required_features = [
                 next((f[:-len(s)] for s in _req_sfx if f.endswith(s)), f)
                 for f in required_features
             ]
 
-            # Parse each feature → (filter, config_or_None)
-            plan = {}   # filter_name â†’ {"configs": set, "base_needed": bool}
+            # Parse each feature â†’ (filter, config_or_None)
+            plan = {}   # filter_name Ã¢â€ â€™ {"configs": set, "base_needed": bool}
             base_features_set = set()
             for feat_name in required_features:
                 base, filt, cfg = parse_feature(feat_name)
@@ -1322,7 +1317,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
             )
             call_idx = 0
 
-            all_extracted = {}   # final_feature_name â†’ value
+            all_extracted = {}   # final_feature_name Ã¢â€ â€™ value
 
             for filter_name, group in plan.items():
                 if feat_cancel_flag.is_set():
@@ -1332,7 +1327,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                 # Apply Butterworth filter
                 filter_cfg = extractor.filter_configs.get(filter_name, {})
                 _feat_progress(call_idx, n_calls,
-                               f"Applying filter: {filter_name}â€¦")
+                               f"Applying filter: {filter_name}Ã¢â‚¬Â¦")
 
                 filtered = extractor.apply_butterworth_filter(
                     signal,
@@ -1426,7 +1421,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                 return
 
             # --- Build feature row for the model ---
-            _feat_progress(n_calls, n_calls, "Building feature vectorâ€¦")
+            _feat_progress(n_calls, n_calls, "Building feature vectorÃ¢â‚¬Â¦")
             missing_features = [f for f in required_features if f not in all_extracted]
             n_found = len(required_features) - len(missing_features)
             n_missing = len(missing_features)
@@ -1441,7 +1436,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
             df_feat = pd.DataFrame([row])
 
             # --- Load model & predict ---
-            _feat_progress(n_calls, n_calls, "Loading modelâ€¦")
+            _feat_progress(n_calls, n_calls, "Loading modelÃ¢â‚¬Â¦")
             import sys as _sys
             _sys.modules[__name__].WeightedEnsemble = WeightedEnsemble
             _sys.modules[__name__].WeightedEnsemble_20260505 = WeightedEnsemble
@@ -1471,7 +1466,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                     try:
                         est.feature_names_in_ = np.array([_clean(f) for f in est.feature_names_in_])
                     except AttributeError:
-                        pass  # read-only property (e.g. Pipeline) — recurse into sub-estimators instead
+                        pass  # read-only property (e.g. Pipeline) â€” recurse into sub-estimators instead
                 # recurse into pipelines / meta-estimators
                 for attr in ("estimators_", "estimator_", "base_estimator_", "steps"):
                     sub = getattr(est, attr, None)
@@ -1487,7 +1482,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
                 for mdl in model.models:
                     _clean_estimator(mdl)
 
-            _feat_progress(n_calls, n_calls, "Running predictionâ€¦")
+            _feat_progress(n_calls, n_calls, "Running predictionÃ¢â‚¬Â¦")
             pred   = model.predict(df_feat)
             probas = model.predict_proba(df_feat)
 
@@ -1511,7 +1506,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
 
     # ============================================================================
-    # TAB 3 — Deep Predict  (PaSST 10s + 3s ensemble)
+    # TAB 3 â€” Deep Predict  (PaSST 10s + 3s ensemble)
     # ============================================================================
     tab_deep = ttk.Frame(notebook)
     notebook.add(tab_deep, text="  Deep Predict  ")
@@ -1542,9 +1537,9 @@ def build_signal_processing_tabs(parent_notebook, root_window):
             deep_file_var.set("No file loaded")
         if trim_result is not None:
             s, e, dur = trim_result
-            deep_trim_var.set(f"Trim: sample {s} → {e}  ({dur:.4f} s)")
+            deep_trim_var.set(f"Trim: sample {s} â†’ {e}  ({dur:.4f} s)")
         else:
-            deep_trim_var.set("No trim window — run Preview Trim Window first")
+            deep_trim_var.set("No trim window â€” run Preview Trim Window first")
 
     # Models frame
     deep_model_frame = tk.LabelFrame(deep_left, text="PaSST Models", padx=8, pady=6)
@@ -1559,7 +1554,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
         p = filedialog.askopenfilename(title="Select Python executable",
                                        filetypes=[("Python", "python*.exe"), ("All", "*.*")])
         if p: deep_python_var.set(p)
-    tk.Button(_py_row, text="…", width=3, command=_browse_python).pack(side=tk.LEFT, padx=(2, 0))
+    tk.Button(_py_row, text="â€¦", width=3, command=_browse_python).pack(side=tk.LEFT, padx=(2, 0))
 
     # Model directory
     tk.Label(deep_model_frame, text="Model directory (.pt files):", anchor="w").pack(anchor="w")
@@ -1569,7 +1564,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     def _browse_model_dir():
         d = filedialog.askdirectory(title="Select folder containing .pt checkpoints")
         if d: deep_model_dir_var.set(d)
-    tk.Button(_mdir_row, text="…", width=3, command=_browse_model_dir).pack(side=tk.LEFT, padx=(2, 0))
+    tk.Button(_mdir_row, text="â€¦", width=3, command=_browse_model_dir).pack(side=tk.LEFT, padx=(2, 0))
 
     # Device
     _dev_row = tk.Frame(deep_model_frame)
@@ -1616,7 +1611,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
             deep_mdl_path_var.set(p)
             deep_mdl_dur_var.set(_infer_dur(p))
 
-    tk.Button(_mdl_r1, text="…", width=3,
+    tk.Button(_mdl_r1, text="â€¦", width=3,
               command=_deep_browse_model).pack(side=tk.LEFT, padx=(2, 0))
 
     # Duration row
@@ -1629,7 +1624,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
              ).pack(side=tk.LEFT, padx=(6, 0))
 
     # Model picker combobox (populated by Scan Dir)
-    _mdl_combo_paths = {}   # basename → full path
+    _mdl_combo_paths = {}   # basename â†’ full path
     deep_mdl_pick_var = tk.StringVar(value="")
     _mdl_combo = ttk.Combobox(deep_mdl_frame, textvariable=deep_mdl_pick_var, state="readonly")
     _mdl_combo.pack(fill=tk.X, pady=(4, 0))
@@ -1659,7 +1654,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
         _mdl_combo.set(pts[0])
         _mdl_combo_selected()
 
-    tk.Button(deep_mdl_frame, text="⟳ Scan Dir",
+    tk.Button(deep_mdl_frame, text="âŸ³ Scan Dir",
               command=_deep_scan_models).pack(fill=tk.X, pady=(4, 0))
 
     # Pre-populate from MODELS_DIR on startup
@@ -1707,12 +1702,12 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     deep_pred_frame = tk.LabelFrame(deep_right, text="Prediction", padx=8, pady=8)
     deep_pred_frame.pack(fill=tk.X, pady=(0, 8))
 
-    deep_ens_pred_var = tk.StringVar(value="—")
+    deep_ens_pred_var = tk.StringVar(value="â€”")
     tk.Label(deep_pred_frame, textvariable=deep_ens_pred_var, fg="steelblue",
              font=tkfont.Font(font=tkfont.nametofont("TkDefaultFont"), size=20, weight="bold")
              ).pack(side=tk.LEFT)
 
-    # Chart frame — canvas is created/replaced dynamically
+    # Chart frame â€” canvas is created/replaced dynamically
     deep_chart_frame = tk.Frame(deep_right)
     deep_chart_frame.pack(fill=tk.BOTH, expand=True)
     deep_canvas = None   # created in _draw_deep_plot
@@ -1752,8 +1747,8 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
     def _deep_validate_setup():
         deep_load_btn.config(state=tk.DISABLED)
-        deep_model_status_var.set("Validating…")
-        deep_status_var.set("Testing Python interpreter…")
+        deep_model_status_var.set("Validatingâ€¦")
+        deep_status_var.set("Testing Python interpreterâ€¦")
 
         def _worker():
             import subprocess as _sp
@@ -1784,7 +1779,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     def _deep_validate_ok(msg, all_ok):
         deep_model_status_var.set(msg)
         deep_load_btn.config(state=tk.NORMAL)
-        deep_status_var.set("Setup OK — ready to run prediction" if all_ok
+        deep_status_var.set("Setup OK â€” ready to run prediction" if all_ok
                             else "Fix missing checkpoints then retry")
 
 
@@ -1826,8 +1821,8 @@ def build_signal_processing_tabs(parent_notebook, root_window):
         deep_predict_btn.config(state=tk.DISABLED)
         deep_cancel_btn.config(state=tk.NORMAL)
         deep_progress_var.set(10)
-        deep_status_var.set("Running inference…")
-        deep_ens_pred_var.set("—")
+        deep_status_var.set("Running inferenceâ€¦")
+        deep_ens_pred_var.set("â€”")
 
         s_idx, e_idx, _ = trim_result
         signal = loaded_df["AI0 (V)"].values[s_idx:e_idx].astype(np.float32)
@@ -1840,7 +1835,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
 
     def _deep_cancel():
         _deep_cancel_flag.set()
-        deep_status_var.set("Cancelling…")
+        deep_status_var.set("Cancellingâ€¦")
 
 
     def _deep_run_thread(signal):
@@ -1886,7 +1881,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
             if _deep_cancel_flag.is_set():
                 root.after(0, _deep_reset_btns); return
 
-            root.after(0, lambda: deep_status_var.set("Loading model & running inference…"))
+            root.after(0, lambda: deep_status_var.set("Loading model & running inferenceâ€¦"))
             root.after(0, lambda: deep_progress_var.set(30))
 
             proc = _sp.run([py, "-c", script], capture_output=True, text=True, timeout=300)
@@ -1967,3 +1962,4 @@ if __name__ == "__main__":
         lambda: (_cleanup(), _root.quit(), _root.destroy()),
     )
     _root.mainloop()
+
