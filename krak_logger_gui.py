@@ -882,6 +882,28 @@ def record_data(on_daq_ready=None):
     recorded_time_axis = time_axis
     recording = False
 
+    # Clipping check for AI04 (STwin float32 stream saturates at ±1.0).
+    # Requires at least 4 consecutive samples at threshold to avoid flagging
+    # isolated loud transients as clipping.
+    if recorded_stwinma2 is not None:
+        _CLIP_THRESHOLD = 0.99
+        _MIN_RUN = 4
+        clipped_mask = np.abs(recorded_stwinma2) >= _CLIP_THRESHOLD
+        # Count length of consecutive True runs
+        runs = np.diff(np.concatenate(([0], clipped_mask.astype(int), [0])))
+        run_starts = np.where(runs == 1)[0]
+        run_ends   = np.where(runs == -1)[0]
+        clipping_runs = int(np.sum((run_ends - run_starts) >= _MIN_RUN))
+        if clipping_runs > 0:
+            total_clipped = int(np.sum(clipped_mask))
+            pct = 100.0 * total_clipped / len(recorded_stwinma2)
+            root.after(0, lambda r=clipping_runs, c=total_clipped, p=pct:
+                messagebox.showwarning(
+                    "AI04 Clipping Detected",
+                    f"{r} clipping event(s) detected — {c:,} samples ({p:.2f}%).\n\n"
+                    "Reduce the input gain on the STwin to avoid distortion."
+                ))
+
     # Write WAV from AI0
     if source == "LAN-XI":
         _sr, max_v = SAMPLE_RATE, 10.0
@@ -1923,7 +1945,7 @@ def build_signal_processing_tabs(parent_notebook, root_window):
     # ---------------------------------------------------------------------------
     # Font size Ã¢â‚¬â€ applies to all widgets via the named system fonts
     # ---------------------------------------------------------------------------
-    _DEFAULT_FONT_SIZE = 15
+    _DEFAULT_FONT_SIZE = 12
 
     font_size_var = tk.IntVar(value=_DEFAULT_FONT_SIZE)
 
@@ -3669,7 +3691,7 @@ mcu_status_lbl = tk.Label(mcu_bar, text="Disconnected", foreground="red")
 mcu_status_lbl.pack(side=tk.LEFT)
 
 tk.Label(mcu_bar, text="Font:").pack(side=tk.LEFT, padx=(16, 2))
-_font_size_var = tk.IntVar(value=15)
+_font_size_var = tk.IntVar(value=12)
 
 def _apply_font_size(*_):
     try:
@@ -3943,7 +3965,43 @@ canvas = FigureCanvasTkAgg(fig, master=krak_frame)
 canvas.get_tk_widget().pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
 build_signal_processing_tabs(notebook, root)
-_build_mel_tab(notebook, root)
+mel_tab = _build_mel_tab(notebook, root)
+
+# ── Ctrl+H: hide / restore all tabs except KRAK Logger ──────────────────────
+_extra_tabs_hidden = False
+_hidden_tab_data   = []   # list of (position, child_widget, {options})
+
+def _toggle_extra_tabs(event=None):
+    global _extra_tabs_hidden, _hidden_tab_data
+    _always_visible = {krak_frame, mcu_ctrl.measurement, mcu_ctrl.position, mel_tab}
+    if not _extra_tabs_hidden:
+        # Collect and hide every tab except the always-visible set
+        _hidden_tab_data = []
+        for pos, tab_id in enumerate(notebook.tabs()):
+            child = notebook.nametowidget(tab_id)
+            if child not in _always_visible:
+                opts = {}
+                for key in ('text', 'image', 'compound', 'underline',
+                            'sticky', 'padding', 'state'):
+                    try:
+                        opts[key] = notebook.tab(tab_id, key)
+                    except tk.TclError:
+                        pass
+                _hidden_tab_data.append((pos, child, opts))
+        for _, child, _ in _hidden_tab_data:
+            notebook.hide(child)
+        notebook.select(krak_frame)
+        _extra_tabs_hidden = True
+    else:
+        # Restore in original position order
+        for pos, child, opts in _hidden_tab_data:
+            notebook.insert(pos, child, **opts)
+        _hidden_tab_data = []
+        _extra_tabs_hidden = False
+
+root.bind('<Control-h>', _toggle_extra_tabs)
+_toggle_extra_tabs()   # start with extra tabs hidden
+
 root.protocol("WM_DELETE_WINDOW", on_closing)
 root.mainloop()
 
