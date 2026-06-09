@@ -190,3 +190,6 @@ OUTPUT_*.wav
 OUTPUT_*.parquet
 # Build artifacts (executables will be in GitHub releases)
 dist/KRAK_Logger_Distribution/
+
+# Disk-buffer temp files from STWINMA2 streaming
+temp_files/*.raw
