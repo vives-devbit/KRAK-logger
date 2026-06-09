@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
+import queue
 import time
 import dotenv
 import datetime
@@ -16,6 +17,7 @@ import os
 import io
 import json
 import subprocess
+import shutil
 from minio import Minio
 from minio.error import S3Error
 from minio.commonconfig import CopySource
@@ -57,6 +59,15 @@ focusrite_sensitivity_var = None  # tk.StringVar V/FS, assigned during UI init
 loadcell_enable_var = None      # tk.BooleanVar, assigned during UI init
 hp_filter_var = None            # tk.BooleanVar, 1 kHz high-pass on playback
 hp5k_filter_var = None          # tk.BooleanVar, 5 kHz high-pass on playback
+STWINMA2_SAMPLE_RATE  = 96_000
+STWINMA2_BLOCK_SIZE   = 4096
+LANXI_CHUNK_DURATION  = 2.0     # seconds per LAN-XI chunk in manual-stop mode
+recorded_stwinma2     = None    # float64 ndarray normalized from int16 ch0, or None
+stwinma2_enable_var   = None    # tk.BooleanVar
+stwinma2_device_var   = None    # tk.StringVar
+stwinma2_device_combo = None    # ttk.Combobox
+stop_indefinite       = threading.Event()   # set to end a manual-stop recording
+manual_stop_var       = None    # tk.BooleanVar
 
 # Smart .env path detection for both development and executable
 def find_env_file():
@@ -165,6 +176,65 @@ class LoadCellCollector:
 
 
 # ---------------------------------------------------------------------------
+# Disk-backed audio buffer — avoids accumulating 96kHz frames in RAM
+# ---------------------------------------------------------------------------
+
+class _DiskBuffer:
+    """Streams int16 audio frames to a temp file via a background writer thread.
+
+    The callback path only enqueues a memoryview copy; the background thread
+    does all I/O so the audio callback stays non-blocking.
+    """
+
+    def __init__(self, path):
+        self._path    = path
+        self._q       = queue.Queue()
+        self._fh      = open(path, 'wb')
+        self._count   = 0          # samples written (updated by writer thread)
+        self._thread  = threading.Thread(target=self._writer, daemon=True)
+        self._thread.start()
+
+    # Called from audio callback — must be fast
+    def push(self, chunk_int16):
+        self._q.put(chunk_int16.tobytes())
+
+    @property
+    def sample_count(self):
+        return self._count
+
+    def _writer(self):
+        while True:
+            item = self._q.get()
+            if item is None:          # sentinel → shut down
+                break
+            self._fh.write(item)
+            self._count += len(item) // 2   # int16 = 2 bytes per sample
+
+    def finish(self):
+        """Stop the writer thread and flush/close the file."""
+        self._q.put(None)
+        self._thread.join()
+        self._fh.close()
+
+    def read_float(self):
+        """Return all recorded samples as a normalised float64 array, then delete the file."""
+        data = np.fromfile(self._path, dtype=np.int16).astype(np.float64) / 32768.0
+        try:
+            os.remove(self._path)
+        except OSError:
+            pass
+        return data
+
+    def discard(self):
+        """Finish without reading; delete the temp file."""
+        self.finish()
+        try:
+            os.remove(self._path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Audio device enumeration for Focusrite / sounddevice
 # ---------------------------------------------------------------------------
 
@@ -180,18 +250,70 @@ def list_audio_input_devices():
 
 
 def refresh_audio_devices():
-    """Repopulate the audio source combobox with LAN-XI + detected input devices."""
+    """Repopulate the audio source combobox with LAN-XI + STWINMA2 + detected input devices."""
     global _audio_device_map
-    _audio_device_map = {"LAN-XI": None}
-    choices = ["LAN-XI"]
+    _audio_device_map = {"LAN-XI": None, "STWINMA2 Ch0 (96 kHz)": "__stwinma2__"}
+
+    # Identify STWINMA2 device index so we can exclude it from the generic dropdown
+    # (it already has a dedicated "STWINMA2 Ch0 (96 kHz)" entry)
+    _stwin_idx = None
+    try:
+        for i, d in enumerate(sd.query_devices()):
+            if d['max_input_channels'] >= 4:
+                n = d['name'].lower()
+                if 'stwin' in n or 'steval' in n or 'stm32' in n:
+                    _stwin_idx = i
+                    break
+        if _stwin_idx is None:
+            for i, d in enumerate(sd.query_devices()):
+                if d['max_input_channels'] >= 4:
+                    _stwin_idx = i
+                    break
+    except Exception:
+        pass
+
+    choices = ["LAN-XI", "STWINMA2 Ch0 (96 kHz)"]
+    stwin_choices = ["Auto-detect"]
     for idx, name in list_audio_input_devices():
         key = f"{name} [{idx}]"
         _audio_device_map[key] = idx
-        choices.append(key)
+        stwin_choices.append(key)          # all input devices selectable as STWINMA2 target
+        if idx != _stwin_idx:              # exclude STWINMA2 from generic source dropdown
+            choices.append(key)
+
     if audio_source_combo is not None:
         audio_source_combo.configure(values=choices)
         if audio_source_var is not None and audio_source_var.get() not in choices:
             audio_source_var.set("LAN-XI")
+    if stwinma2_device_combo is not None:
+        stwinma2_device_combo.configure(values=stwin_choices)
+        if stwinma2_device_var is not None and stwinma2_device_var.get() not in stwin_choices:
+            stwinma2_device_var.set("Auto-detect")
+
+
+def _find_stwinma2_device():
+    """Return sounddevice index for STWINMA2, or None if not found.
+
+    First honours the explicit selection in stwinma2_device_var; falls back to
+    auto-detection (4-channel input with STWIN/STEVAL in name, or any 4-ch input).
+    """
+    sel = stwinma2_device_var.get() if stwinma2_device_var else "Auto-detect"
+    if sel and sel != "Auto-detect":
+        idx = _audio_device_map.get(sel)
+        if idx is not None:
+            return idx
+    devices = sd.query_devices()
+    # Priority 1: name contains STWIN, STEVAL, or STM32
+    for i, d in enumerate(devices):
+        if d['max_input_channels'] >= 4:
+            n = d['name'].lower()
+            if 'stwin' in n or 'steval' in n or 'stm32' in n:
+                return i
+    # Priority 2: any 4-channel input
+    for i, d in enumerate(devices):
+        if d['max_input_channels'] >= 4:
+            return i
+    return None
 
 def select_excel_file():
     global excel_metadata_df, excel_file_path
@@ -360,66 +482,204 @@ def ensure_temp_dir():
 
 def record_data(on_daq_ready=None):
     global recording, NUM_SAMPLES, DURATION, OUTPUT_WAV_FILE, OUTPUT_PARQUET_FILE
-    global recorded_data, recorded_time_axis, recorded_loadcell
+    global recorded_data, recorded_time_axis, recorded_loadcell, recorded_stwinma2
 
-    source = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
+    source      = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
+    manual_mode = manual_stop_var is not None and manual_stop_var.get()
 
     if source == "LAN-XI" and not LANXI_AVAILABLE:
         messagebox.showerror("LAN-XI Not Available",
                              "No LAN-XI device connected. Check BKDAQ_IP in .env and restart.")
         return
 
-    try:
-        DURATION = float(duration_entry.get())
-    except ValueError:
-        messagebox.showerror("Invalid Input", "Please enter a valid number for duration.")
-        return
+    if not manual_mode:
+        try:
+            DURATION = float(duration_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid number for duration.")
+            return
 
     OUTPUT_WAV_FILE, OUTPUT_PARQUET_FILE = generate_filenames()
     ensure_temp_dir()
-    OUTPUT_WAV_FILE = os.path.join(TEMP_DIR, OUTPUT_WAV_FILE)
+    OUTPUT_WAV_FILE     = os.path.join(TEMP_DIR, OUTPUT_WAV_FILE)
     OUTPUT_PARQUET_FILE = os.path.join(TEMP_DIR, OUTPUT_PARQUET_FILE)
 
-    recording = True
-
+    recording    = True
+    _lc_duration = 86400.0 if manual_mode else DURATION   # effectively indefinite for manual stop
     lc_collector = None
-    lc_enabled = loadcell_enable_var is not None and loadcell_enable_var.get()
+    lc_enabled   = loadcell_enable_var is not None and loadcell_enable_var.get()
+
+    # --- STWINMA2 simultaneous capture setup (skipped when STWINMA2 is the primary source) ---
+    stwin_enabled = (stwinma2_enable_var is not None and stwinma2_enable_var.get()
+                     and source != "STWINMA2 Ch0 (96 kHz)")
+    stwin_buf     = None
+    stwin_stream  = None
+
+    def _stwin_callback(indata, frames_count, time_info, status):
+        if status:
+            print(f"STWINMA2: {status}")
+        if stwin_buf is not None:
+            stwin_buf.push(indata[:, 0].copy())
+
+    if stwin_enabled:
+        _sidx = _find_stwinma2_device()
+        if _sidx is None:
+            messagebox.showwarning("STWINMA2 Not Found",
+                                   "Could not find a 4-channel USB audio input (STWINMA2). "
+                                   "Recording without STWINMA2.")
+            stwin_enabled = False
+        else:
+            try:
+                _stwin_raw_path = os.path.join(TEMP_DIR, f"_stwin_{int(time.time()*1000)}.raw")
+                stwin_buf    = _DiskBuffer(_stwin_raw_path)
+                stwin_stream = sd.InputStream(
+                    device=_sidx, samplerate=STWINMA2_SAMPLE_RATE,
+                    channels=4, dtype='int16', blocksize=STWINMA2_BLOCK_SIZE,
+                    callback=_stwin_callback,
+                )
+                stwin_stream.start()
+            except Exception as stwin_err:
+                messagebox.showwarning("STWINMA2 Error",
+                                       f"Failed to open STWINMA2 stream:\n{stwin_err}\n"
+                                       "Recording without STWINMA2.")
+                stwin_enabled = False
+                stwin_stream  = None
+                if stwin_buf is not None:
+                    stwin_buf.discard()
+                    stwin_buf = None
 
     time_axis = None
-    data = None
+    data      = None
 
     try:
+        # ── LAN-XI ──────────────────────────────────────────────────────────────
         if source == "LAN-XI":
+            if manual_mode:
+                # Record in fixed-length chunks until stop_indefinite is set
+                all_times   = []
+                all_ch      = [[], [], [], []]
+                t_offset    = 0.0
+                first_chunk = True
+
+                while not stop_indefinite.is_set():
+                    def _ready_first(orig=on_daq_ready):
+                        nonlocal lc_collector
+                        if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
+                            lc_collector = LoadCellCollector(mcu_protocol)
+                            lc_collector.start(_lc_duration)
+                        if orig is not None:
+                            orig()
+                    try:
+                        t_c, d_c = Lanxi.SampleChannels(
+                            LANXI_CHUNK_DURATION,
+                            on_ready=_ready_first if first_chunk else None,
+                        )
+                    except Exception as _chunk_err:
+                        if not stop_indefinite.is_set():
+                            recording = False
+                            messagebox.showerror("Recording Error",
+                                                 f"LAN-XI error:\n\n{_chunk_err}")
+                            return
+                        break
+                    all_times.append(t_c + t_offset)
+                    for i in range(4):
+                        all_ch[i].append(d_c[i])
+                    t_offset += LANXI_CHUNK_DURATION
+                    first_chunk = False
+
+                if not all_times:
+                    recording = False
+                    return
+                time_axis = np.concatenate(all_times)
+                data      = [np.concatenate(all_ch[i]) for i in range(4)]
+                DURATION  = float(time_axis[-1]) if len(time_axis) else 0.0
+
+            else:
+                try:
+                    def _daq_ready_wrapper(orig=on_daq_ready):
+                        nonlocal lc_collector
+                        if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
+                            lc_collector = LoadCellCollector(mcu_protocol)
+                            lc_collector.start(DURATION)
+                        if orig is not None:
+                            orig()
+                    time_axis, data = Lanxi.SampleChannels(DURATION, on_ready=_daq_ready_wrapper)
+                except ConnectionRefusedError:
+                    recording = False
+                    messagebox.showerror("Connection Error",
+                                       "Failed to connect to LAN-XI device.\n\n"
+                                       "The device may be busy from a previous recording.\n"
+                                       "Attempting to reset the connection...")
+                    try:
+                        Lanxi.reset_stream()
+                        time_axis, data = Lanxi.SampleChannels(DURATION)
+                    except Exception as retry_error:
+                        messagebox.showerror("Connection Failed",
+                                           f"Could not establish connection after reset.\n\n"
+                                           f"Error: {retry_error}\n\n"
+                                           f"Try restarting the application or power cycle the LAN-XI device.")
+                        return
+                except Exception as e:
+                    recording = False
+                    messagebox.showerror("Recording Error", f"An error occurred during recording:\n\n{e}")
+                    return
+
+        # ── STWINMA2-only ────────────────────────────────────────────────────────
+        elif source == "STWINMA2 Ch0 (96 kHz)":
+            stwin_idx_only = _find_stwinma2_device()
+            if stwin_idx_only is None:
+                recording = False
+                messagebox.showerror("STWINMA2 Not Found",
+                                     "Could not find a 4-channel USB audio input (STWINMA2).\n"
+                                     "Check connection and click Refresh.")
+                return
+
+            _so_raw_path = os.path.join(TEMP_DIR, f"_stwin_only_{int(time.time()*1000)}.raw")
+            so_buf = _DiskBuffer(_so_raw_path)
+
+            def _stwin_only_cb(indata, fc, ti, status):
+                if status:
+                    print(f"STWINMA2: {status}")
+                so_buf.push(indata[:, 0].copy())
+
             try:
-                def _daq_ready_wrapper(orig=on_daq_ready):
-                    nonlocal lc_collector
+                with sd.InputStream(device=stwin_idx_only, samplerate=STWINMA2_SAMPLE_RATE,
+                                    channels=4, dtype='int16', blocksize=STWINMA2_BLOCK_SIZE,
+                                    callback=_stwin_only_cb):
                     if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
                         lc_collector = LoadCellCollector(mcu_protocol)
-                        lc_collector.start(DURATION)
-                    if orig is not None:
-                        orig()
-                time_axis, data = Lanxi.SampleChannels(DURATION, on_ready=_daq_ready_wrapper)
-            except ConnectionRefusedError:
-                recording = False
-                messagebox.showerror("Connection Error",
-                                   "Failed to connect to LAN-XI device.\n\n"
-                                   "The device may be busy from a previous recording.\n"
-                                   "Attempting to reset the connection...")
-                try:
-                    Lanxi.reset_stream()
-                    time_axis, data = Lanxi.SampleChannels(DURATION)
-                except Exception as retry_error:
-                    messagebox.showerror("Connection Failed",
-                                       f"Could not establish connection after reset.\n\n"
-                                       f"Error: {retry_error}\n\n"
-                                       f"Try restarting the application or power cycle the LAN-XI device.")
-                    return
+                        lc_collector.start(_lc_duration)
+                    if on_daq_ready is not None:
+                        on_daq_ready()
+                    if manual_mode:
+                        stop_indefinite.wait()
+                    else:
+                        n_expected = int(STWINMA2_SAMPLE_RATE * DURATION)
+                        while so_buf.sample_count < n_expected:
+                            time.sleep(0.05)
+
+                so_buf.finish()
+                raw = so_buf.read_float()
+                if not manual_mode and len(raw) > int(STWINMA2_SAMPLE_RATE * DURATION):
+                    raw = raw[:int(STWINMA2_SAMPLE_RATE * DURATION)]
+
+                n_samples  = len(raw)
+                actual_dur = n_samples / STWINMA2_SAMPLE_RATE
+                if manual_mode:
+                    DURATION = actual_dur
+                time_axis = np.linspace(0, actual_dur, n_samples, endpoint=False)
+                data = [raw,
+                        np.full(n_samples, np.nan),
+                        np.full(n_samples, np.nan),
+                        np.full(n_samples, np.nan)]
             except Exception as e:
+                so_buf.discard()
                 recording = False
-                messagebox.showerror("Recording Error", f"An error occurred during recording:\n\n{e}")
+                messagebox.showerror("Recording Error", f"STWINMA2 recording failed:\n\n{e}")
                 return
+
+        # ── Focusrite / generic sounddevice ──────────────────────────────────────
         else:
-            # Focusrite / sounddevice path -- device enumerated at runtime so any model works
             device_idx = _audio_device_map.get(source)
             try:
                 sensitivity = float(focusrite_sensitivity_var.get()) if focusrite_sensitivity_var else 1.0
@@ -427,35 +687,97 @@ def record_data(on_daq_ready=None):
                 sensitivity = 1.0
 
             sr = FOCUSRITE_SAMPLE_RATE
-            n_samples = int(sr * DURATION)
-            try:
-                audio_raw = sd.rec(n_samples, samplerate=sr, channels=1,
-                                   device=device_idx, dtype="float32")
-                # Start LC exactly when audio stream opens
-                if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
-                    lc_collector = LoadCellCollector(mcu_protocol)
-                    lc_collector.start(DURATION)
-                if on_daq_ready is not None:
-                    on_daq_ready()
-                sd.wait()
-                ai0 = audio_raw[:, 0].astype(float) * sensitivity
-                time_axis = np.linspace(0, DURATION, n_samples, endpoint=False)
-                # AI1-AI3 not available from Focusrite; stored as NaN to preserve parquet schema
-                data = [ai0,
-                        np.full(n_samples, np.nan),
-                        np.full(n_samples, np.nan),
-                        np.full(n_samples, np.nan)]
-            except Exception as e:
-                recording = False
-                messagebox.showerror("Recording Error", f"Focusrite recording failed:\n\n{e}")
-                return
+
+            if manual_mode:
+                fo_frames  = []
+                fo_lock    = threading.Lock()
+
+                def _fo_cb(indata, fc, ti, status):
+                    if status:
+                        print(f"Audio: {status}")
+                    with fo_lock:
+                        fo_frames.append(indata[:, 0].copy())
+
+                try:
+                    with sd.InputStream(device=device_idx, samplerate=sr, channels=1,
+                                        dtype='float32', callback=_fo_cb):
+                        if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
+                            lc_collector = LoadCellCollector(mcu_protocol)
+                            lc_collector.start(_lc_duration)
+                        if on_daq_ready is not None:
+                            on_daq_ready()
+                        stop_indefinite.wait()
+
+                    with fo_lock:
+                        _all_fo = fo_frames[:]
+                    raw_fo    = np.concatenate(_all_fo) if _all_fo else np.array([], dtype=np.float32)
+                    ai0       = raw_fo.astype(float) * sensitivity
+                    n_samples = len(ai0)
+                    DURATION  = n_samples / sr
+                    time_axis = np.linspace(0, DURATION, n_samples, endpoint=False)
+                    data = [ai0,
+                            np.full(n_samples, np.nan),
+                            np.full(n_samples, np.nan),
+                            np.full(n_samples, np.nan)]
+                except Exception as e:
+                    recording = False
+                    messagebox.showerror("Recording Error", f"Recording failed:\n\n{e}")
+                    return
+            else:
+                n_samples = int(sr * DURATION)
+                try:
+                    audio_raw = sd.rec(n_samples, samplerate=sr, channels=1,
+                                       device=device_idx, dtype="float32")
+                    if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
+                        lc_collector = LoadCellCollector(mcu_protocol)
+                        lc_collector.start(DURATION)
+                    if on_daq_ready is not None:
+                        on_daq_ready()
+                    sd.wait()
+                    ai0 = audio_raw[:, 0].astype(float) * sensitivity
+                    time_axis = np.linspace(0, DURATION, n_samples, endpoint=False)
+                    data = [ai0,
+                            np.full(n_samples, np.nan),
+                            np.full(n_samples, np.nan),
+                            np.full(n_samples, np.nan)]
+                except Exception as e:
+                    recording = False
+                    messagebox.showerror("Recording Error", f"Focusrite recording failed:\n\n{e}")
+                    return
+
     finally:
+        # Stop simultaneous STWINMA2 stream
+        if stwin_stream is not None:
+            try:
+                stwin_stream.stop()
+                stwin_stream.close()
+            except Exception:
+                pass
+
+        # Collect simultaneous STWINMA2 data from disk buffer
+        if stwin_buf is not None:
+            stwin_buf.finish()
+            if stwin_enabled and stwin_buf.sample_count > 0:
+                recorded_stwinma2 = stwin_buf.read_float()
+            else:
+                stwin_buf.discard()
+                recorded_stwinma2 = None
+            stwin_buf = None
+        else:
+            recorded_stwinma2 = None
+
         # Always stop LC_LOGGING stream, even on error
         if lc_collector is not None:
             lc_t, lc_v = lc_collector.stop()
             recorded_loadcell = (lc_t, lc_v) if lc_t is not None else None
         else:
             recorded_loadcell = None
+
+        # Reset record button when a manual-stop recording finishes
+        if manual_mode:
+            root.after(0, lambda: record_button.config(
+                text="Start Recording", bg="SystemButtonFace", fg="black",
+                command=start_recording, state="normal"))
 
     if time_axis is None or data is None:
         return
@@ -467,21 +789,36 @@ def record_data(on_daq_ready=None):
         lc_resampled = np.interp(time_axis, lc_t, lc_v,
                                   left=float("nan"), right=float("nan"))
 
-    update_plot(time_axis, data, lc_resampled)
+    update_plot(time_axis, data, lc_resampled, stwinma2=recorded_stwinma2)
 
     recorded_data = data
     recorded_time_axis = time_axis
     recording = False
 
     # Write WAV from AI0
-    _sr = SAMPLE_RATE if source == "LAN-XI" else FOCUSRITE_SAMPLE_RATE
-    try:
-        sensitivity = float(focusrite_sensitivity_var.get()) if focusrite_sensitivity_var else 1.0
-    except (ValueError, tk.TclError):
-        sensitivity = 1.0
-    max_v = 10.0 if source == "LAN-XI" else max(sensitivity, 1e-9)
+    if source == "LAN-XI":
+        _sr, max_v = SAMPLE_RATE, 10.0
+    elif source == "STWINMA2 Ch0 (96 kHz)":
+        _sr, max_v = STWINMA2_SAMPLE_RATE, 1.0
+    else:
+        _sr = FOCUSRITE_SAMPLE_RATE
+        try:
+            sensitivity = float(focusrite_sensitivity_var.get()) if focusrite_sensitivity_var else 1.0
+        except (ValueError, tk.TclError):
+            sensitivity = 1.0
+        max_v = max(sensitivity, 1e-9)
     audio_int16 = np.nan_to_num(data[0] / max_v * 32767, nan=0).astype(np.int16)
     wav.write(OUTPUT_WAV_FILE, _sr, audio_int16)
+
+    # Write STWINMA2 Ch0 WAV at native 96 kHz (int16, normalised)
+    stwin_wav_path = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
+    if recorded_stwinma2 is not None:
+        stwin_int16 = (np.clip(recorded_stwinma2, -1.0, 1.0) * 32767).astype(np.int16)
+        wav.write(stwin_wav_path, STWINMA2_SAMPLE_RATE, stwin_int16)
+    elif source == "STWINMA2 Ch0 (96 kHz)":
+        # standalone source — data[0] is already the normalised ch0 signal
+        stwin_int16 = (np.clip(data[0], -1.0, 1.0) * 32767).astype(np.int16)
+        wav.write(stwin_wav_path, STWINMA2_SAMPLE_RATE, stwin_int16)
 
     # Save parquet immediately so it is available locally before MinIO upload
     save_to_parquet(lc_resampled)
@@ -492,7 +829,12 @@ def record_data(on_daq_ready=None):
 def save_to_parquet(lc_resampled=None):
     if recorded_data is not None:
         source = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
-        _sr = SAMPLE_RATE if source == "LAN-XI" else FOCUSRITE_SAMPLE_RATE
+        if source == "LAN-XI":
+            _sr = SAMPLE_RATE
+        elif source == "STWINMA2 Ch0 (96 kHz)":
+            _sr = STWINMA2_SAMPLE_RATE
+        else:
+            _sr = FOCUSRITE_SAMPLE_RATE
 
         metadata = get_all_metadata()
         metadata.update({
@@ -512,6 +854,12 @@ def save_to_parquet(lc_resampled=None):
         }
         if lc_resampled is not None:
             df_dict["Load Cell (mV)"] = lc_resampled
+        if recorded_stwinma2 is not None:
+            from scipy.signal import resample as _resample
+            n_target = len(recorded_time_axis)
+            df_dict["AI04 (norm)"] = _resample(recorded_stwinma2, n_target)
+            metadata["STWINMA2 Sample Rate (Hz)"] = STWINMA2_SAMPLE_RATE
+            metadata["STWINMA2 Channels"] = "Ch0 only (of 4)"
 
         df = pd.DataFrame(df_dict)
         df.attrs.update(metadata)
@@ -538,6 +886,9 @@ def upload_to_minio():
             # Get file sizes for verification
             parquet_size = os.path.getsize(OUTPUT_PARQUET_FILE)
             wav_size = os.path.getsize(OUTPUT_WAV_FILE)
+            stwin_wav_path = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
+            stwin_wav_basename = os.path.basename(stwin_wav_path)
+            has_stwin_wav = os.path.exists(stwin_wav_path)
 
             # Direct upload of files
             root.after(0, lambda: upload_button.config(text="Uploading parquet..."))
@@ -545,6 +896,10 @@ def upload_to_minio():
 
             root.after(0, lambda: upload_button.config(text="Uploading WAV..."))
             minio_client.fput_object(BUCKET_NAME, wav_basename, OUTPUT_WAV_FILE)
+
+            if has_stwin_wav:
+                root.after(0, lambda: upload_button.config(text="Uploading STWINMA2 WAV..."))
+                minio_client.fput_object(BUCKET_NAME, stwin_wav_basename, stwin_wav_path)
 
             # Verify uploaded files
             root.after(0, lambda: upload_button.config(text="Verifying upload..."))
@@ -572,10 +927,11 @@ def upload_to_minio():
                     except Exception as e:
                         print(f"Warning: Search index update failed: {e}")
 
+                extra = f"\nSTWINMA2 WAV: {stwin_wav_basename}" if has_stwin_wav else ""
                 messagebox.showinfo("Upload Complete",
                                   f"Files uploaded to MinIO successfully!\n\n"
                                   f"Parquet: {parquet_basename}\n"
-                                  f"WAV: {wav_basename}")
+                                  f"WAV: {wav_basename}{extra}")
 
                 # Get the uploaded file base name (without extension)
                 uploaded_file_base = os.path.splitext(parquet_basename)[0]
@@ -601,6 +957,35 @@ def upload_to_minio():
 
     # Run upload in separate thread
     threading.Thread(target=upload_worker, daemon=True).start()
+
+
+def save_to_disk():
+    """Copy the current recording files to a user-chosen folder."""
+    if not os.path.exists(OUTPUT_PARQUET_FILE) or not os.path.exists(OUTPUT_WAV_FILE):
+        save_to_parquet()
+
+    dest_dir = filedialog.askdirectory(title="Choose folder to save recording")
+    if not dest_dir:
+        return
+
+    copied = []
+    failed = []
+    for src in [OUTPUT_PARQUET_FILE, OUTPUT_WAV_FILE,
+                OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')]:
+        if os.path.exists(src):
+            try:
+                shutil.copy2(src, os.path.join(dest_dir, os.path.basename(src)))
+                copied.append(os.path.basename(src))
+            except Exception as e:
+                failed.append(f"{os.path.basename(src)}: {e}")
+
+    if failed:
+        messagebox.showerror("Save to Disk", "Some files could not be copied:\n" + "\n".join(failed))
+    else:
+        upload_button.config(bg="SystemButtonFace", fg="black")
+        messagebox.showinfo("Save to Disk",
+                            f"Saved {len(copied)} file(s) to:\n{dest_dir}\n\n" +
+                            "\n".join(copied))
 
 
 def _prepare_audio(signal_float, sample_rate):
@@ -656,8 +1041,17 @@ def play_ai3_audio():
         messagebox.showerror("Playback Error", f"Failed to play AI3 audio: {str(e)}")
 
 def start_recording():
-    if not recording:
-        threading.Thread(target=record_data, daemon=True).start()
+    if recording:
+        return
+    if manual_stop_var is not None and manual_stop_var.get():
+        stop_indefinite.clear()
+        record_button.config(text="⏹  Stop", bg="red", fg="white",
+                             command=_stop_manual_recording)
+    threading.Thread(target=record_data, daemon=True).start()
+
+def _stop_manual_recording():
+    stop_indefinite.set()
+    record_button.config(text="Stopping…", state="disabled")
 
 def start_linked_recording(on_daq_ready):
     """Start a DAQ-linked recording. on_daq_ready() fires when data starts flowing
@@ -673,7 +1067,7 @@ def start_linked_recording(on_daq_ready):
 
 
 
-def update_plot(time_axis, data, loadcell=None, title="Recorded Data"):
+def update_plot(time_axis, data, loadcell=None, title="Recorded Data", stwinma2=None):
     def _has_data(arr):
         if arr is None:
             return False
@@ -682,15 +1076,22 @@ def update_plot(time_axis, data, loadcell=None, title="Recorded Data"):
 
     channels = []
     if _has_data(data[0]):
-        channels.append(("AI0 (V)",        np.asarray(data[0], dtype=float),           "b"))
+        channels.append(("AI0 (V)",           np.asarray(data[0], dtype=float),           "b"))
     if _has_data(data[1]):
-        channels.append(("AI1 (V)",        np.asarray(data[1], dtype=float),           "r"))
+        channels.append(("AI1 (V)",           np.asarray(data[1], dtype=float),           "r"))
     if _has_data(data[2]):
-        channels.append(("AI2 (V)",        np.asarray(data[2], dtype=float),           "g"))
+        channels.append(("AI2 (V)",           np.asarray(data[2], dtype=float),           "g"))
     if _has_data(data[3]):
-        channels.append(("AI3 (mV)",       np.asarray(data[3], dtype=float) * 1000,   "m"))
+        channels.append(("AI3 (mV)",          np.asarray(data[3], dtype=float) * 1000,   "m"))
     if _has_data(loadcell):
-        channels.append(("Load Cell (mV)", np.asarray(loadcell, dtype=float),          "r"))
+        channels.append(("Load Cell (mV)",    np.asarray(loadcell, dtype=float),          "saddlebrown"))
+    if _has_data(stwinma2):
+        # Resampled to match time_axis length for display
+        from scipy.signal import resample as _resample
+        _s = np.asarray(stwinma2, dtype=float)
+        if len(_s) != len(time_axis):
+            _s = _resample(_s, len(time_axis))
+        channels.append(("AI04",               _s,                                         "darkcyan"))
 
     if not channels:
         return
@@ -794,9 +1195,11 @@ def load_sample():
         response = minio_client.get_object(BUCKET_NAME, parquet_key)
         df = pd.read_parquet(io.BytesIO(response.read()))
 
-        lc_col = df["Load Cell (mV)"].values if "Load Cell (mV)" in df.columns else None
+        lc_col     = df["Load Cell (mV)"].values       if "Load Cell (mV)"       in df.columns else None
+        stwin_col  = (df["AI04 (norm)"].values         if "AI04 (norm)"          in df.columns else
+                      df["STWINMA2 Ch0 (norm)"].values if "STWINMA2 Ch0 (norm)"  in df.columns else None)
         update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"], df["AI3 (mV)"] / 1000],
-                    loadcell=lc_col, title=base_name)
+                    loadcell=lc_col, title=base_name, stwinma2=stwin_col)
         metadata_text.delete("1.0", tk.END)
         for key, val in df.attrs.items():
             metadata_text.insert(tk.END, f"{key}: {val}\n")
@@ -1015,8 +1418,10 @@ def on_closing():
 def _compute_mel_spectrogram(signal, sr, n_mels=128):
     """Compute mel spectrogram with scipy+numpy; returns (mel_db, times, mel_freqs_hz)."""
     from scipy.signal import stft as _stft
-    n_fft = 2048
-    hop   = 512
+    # Scale n_fft with sample rate so low-frequency mel bands always have
+    # enough FFT bins (bin width < ~25 Hz keeps triangular filters non-zero).
+    n_fft = 2048 if sr <= 52000 else 4096
+    hop   = n_fft // 4
     _, t, Zxx = _stft(signal, fs=sr, nperseg=n_fft, noverlap=n_fft - hop, window="hann")
     power = np.abs(Zxx) ** 2
 
@@ -1055,7 +1460,7 @@ def _build_mel_tab(notebook, root_win):
 
     tk.Label(ctrl, text="Channel:").pack(anchor="w")
     channel_var = tk.StringVar(value="AI0")
-    for ch in ("AI0", "AI2", "AI3 Mic"):
+    for ch in ("AI0", "AI2", "AI3 Mic", "AI04"):
         tk.Radiobutton(ctrl, text=ch, variable=channel_var, value=ch).pack(anchor="w")
 
     mel_hp_var = tk.BooleanVar(value=False)
@@ -1102,6 +1507,14 @@ def _build_mel_tab(notebook, root_win):
                 status_var.set("No AI2 data."); return
             sig = (recorded_data[2] / 10.0).astype(np.float32)
             sr  = SAMPLE_RATE
+        elif ch == "AI04":
+            stwin_wav = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
+            if not os.path.exists(stwin_wav):
+                status_var.set("No STWINMA2 WAV found. Record with source 'STWINMA2 Ch0 (96 kHz)' or enable 'Also record STWINMA2 Ch0'."); return
+            sr, raw = wav.read(stwin_wav)
+            sig = raw.astype(np.float32)
+            if sig.ndim > 1:
+                sig = sig[:, 0]
         else:
             if recorded_data is None or len(recorded_data) <= 3:
                 status_var.set("No AI3 data."); return
@@ -1142,8 +1555,10 @@ def _build_mel_tab(notebook, root_win):
             title_suffix = ""
         ax.set_title(f"Mel Spectrogram – {ch}{title_suffix}")
 
-        # Frequency axis ticks
+        # Frequency axis ticks — extend to 48 kHz for STWINMA2 (96 kHz Nyquist)
         tick_hz = [100, 500, 1000, 2000, 5000, 10000, 20000]
+        if ch == "AI04":
+            tick_hz += [32000, 48000]
         valid   = [f for f in tick_hz if mel_hz[0] <= f <= mel_hz[-1]]
         idx     = [float(np.searchsorted(mel_hz, f)) for f in valid]
         ax.set_yticks(idx)
@@ -3228,10 +3643,18 @@ clear_metadata_btn = tk.Button(additional_section, text="Clear All Metadata", co
 clear_metadata_btn.pack(pady=2)
 
 
-duration_label = tk.Label(control_frame, text="Duration (s):")
-duration_label.pack(anchor="e")
-duration_entry = tk.Entry(control_frame, textvariable=shared_duration_var)
-duration_entry.pack(anchor="e")
+dur_row = tk.Frame(control_frame)
+dur_row.pack(anchor="e", fill=tk.X, pady=(4, 0))
+tk.Label(dur_row, text="Duration (s):").pack(side=tk.LEFT)
+duration_entry = tk.Entry(dur_row, textvariable=shared_duration_var, width=7)
+duration_entry.pack(side=tk.LEFT, padx=(4, 8))
+manual_stop_var = tk.BooleanVar(value=False)
+
+def _toggle_manual_stop(*_):
+    duration_entry.configure(state="disabled" if manual_stop_var.get() else "normal")
+
+tk.Checkbutton(dur_row, text="Manual stop", variable=manual_stop_var,
+               command=_toggle_manual_stop).pack(side=tk.LEFT)
 
 # Recording section
 recording_section = tk.LabelFrame(control_frame, text="Recording", padx=5, pady=5)
@@ -3245,6 +3668,22 @@ tk.Label(src_row, text="Audio source:").pack(side=tk.LEFT)
 audio_source_combo = ttk.Combobox(src_row, textvariable=audio_source_var, width=26, state="readonly")
 audio_source_combo.pack(side=tk.LEFT, padx=(4, 2))
 ttk.Button(src_row, text="Refresh", command=refresh_audio_devices).pack(side=tk.LEFT)
+
+# STWINMA2 simultaneous capture (USB 4-mic array, Ch0 only @ 96 kHz)
+stwin_section = tk.LabelFrame(recording_section, text="STWINMA2 (4-mic array)", padx=4, pady=4)
+stwin_section.pack(fill=tk.X, pady=(0, 3))
+
+stwinma2_enable_var = tk.BooleanVar(value=False)
+tk.Checkbutton(stwin_section, text="Also record STWINMA2 Ch0 (96 kHz, USB)",
+               variable=stwinma2_enable_var).pack(anchor="w")
+
+stwin_dev_row = tk.Frame(stwin_section)
+stwin_dev_row.pack(fill=tk.X, pady=(2, 0))
+tk.Label(stwin_dev_row, text="Device:").pack(side=tk.LEFT)
+stwinma2_device_var = tk.StringVar(value="Auto-detect")
+stwinma2_device_combo = ttk.Combobox(stwin_dev_row, textvariable=stwinma2_device_var,
+                                      values=["Auto-detect"], width=24, state="readonly")
+stwinma2_device_combo.pack(side=tk.LEFT, padx=(4, 2))
 
 # Focusrite input sensitivity (V / FS)
 sens_row = tk.Frame(recording_section)
@@ -3283,8 +3722,11 @@ play_ai3_button.pack(side=tk.LEFT, padx=(4, 0))
 stop_button = tk.Button(play_btn_frame, text="Stop", command=stop_audio, fg="red")
 stop_button.pack(side=tk.LEFT, padx=(4, 0))
 
-upload_button = tk.Button(recording_section, text="Upload to MinIO", command=upload_to_minio)
-upload_button.pack(anchor="e")
+action_row = tk.Frame(recording_section)
+action_row.pack(anchor="e", pady=(4, 0))
+tk.Button(action_row, text="Save to Disk", command=save_to_disk).pack(side=tk.LEFT, padx=(0, 4))
+upload_button = tk.Button(action_row, text="Upload to MinIO", command=upload_to_minio)
+upload_button.pack(side=tk.LEFT)
 
 
 # File list display for S3 files

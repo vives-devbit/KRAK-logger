@@ -1,4 +1,4 @@
-# KRAK-Logger Virtual Environment Activation Script
+﻿# KRAK-Logger Virtual Environment Activation Script
 # Automatically detects current user and activates their virtual environment
 
 # Get current username
@@ -14,6 +14,10 @@ if (Test-Path $venvPath) {
     Write-Host "Activating virtual environment: $venvPath" -ForegroundColor Cyan
     & "$venvPath\Scripts\Activate.ps1"
 
+    # Redirect .pyc bytecode cache outside OneDrive to prevent KeyboardInterrupt on first run
+    $env:PYTHONPYCACHEPREFIX = "C:\Temp\pycache"
+    New-Item -ItemType Directory -Force "C:\Temp\pycache" | Out-Null
+    Write-Host "Bytecode cache: C:\Temp\pycache" -ForegroundColor DarkGray
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Virtual environment activated!" -ForegroundColor Green
         Write-Host "Python version: " -NoNewline
@@ -47,3 +51,4 @@ if (Test-Path $venvPath) {
     Write-Host ""
     exit 1
 }
+
