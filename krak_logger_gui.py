@@ -1142,6 +1142,8 @@ def play_ai3_audio():
             sd.play(audio, SAMPLE_RATE)
         else:
             messagebox.showwarning("No Audio", "No recorded data found. Please record audio first.")
+    except Exception as e:
+        messagebox.showerror("Playback Error", f"Failed to play AI3 audio: {str(e)}")
 
 def play_ai4_audio():
     """Play the recorded STwin AI04 channel at 192 kHz (falls back to 48 kHz if unsupported)."""
