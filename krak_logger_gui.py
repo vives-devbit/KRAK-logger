@@ -59,10 +59,11 @@ focusrite_sensitivity_var = None  # tk.StringVar V/FS, assigned during UI init
 loadcell_enable_var = None      # tk.BooleanVar, assigned during UI init
 hp_filter_var = None            # tk.BooleanVar, 1 kHz high-pass on playback
 hp5k_filter_var = None          # tk.BooleanVar, 5 kHz high-pass on playback
-STWINMA2_SAMPLE_RATE  = 96_000
-STWINMA2_BLOCK_SIZE   = 4096
+STWINMA2_SAMPLE_RATE  = 192_000
+STWINMA2_BLOCK_SIZE   = 2048
 LANXI_CHUNK_DURATION  = 2.0     # seconds per LAN-XI chunk in manual-stop mode
-recorded_stwinma2     = None    # float64 ndarray normalized from int16 ch0, or None
+recorded_stwinma2     = None    # float64 ndarray in [-1, 1] from float32 ch0, or None
+recorded_stwin_offset = None    # seconds between gate-open and first captured sample
 stwinma2_enable_var   = None    # tk.BooleanVar
 stwinma2_device_var   = None    # tk.StringVar
 stwinma2_device_combo = None    # ttk.Combobox
@@ -180,14 +181,18 @@ class LoadCellCollector:
 # ---------------------------------------------------------------------------
 
 class _DiskBuffer:
-    """Streams int16 audio frames to a temp file via a background writer thread.
+    """Streams audio frames to a temp file via a background writer thread.
 
     The callback path only enqueues a memoryview copy; the background thread
     does all I/O so the audio callback stays non-blocking.
+
+    dtype: numpy dtype used for on-disk storage (np.int16 or np.float32).
     """
 
-    def __init__(self, path):
+    def __init__(self, path, dtype=np.int16):
         self._path    = path
+        self._dtype   = dtype
+        self._bps     = np.dtype(dtype).itemsize   # bytes per sample
         self._q       = queue.Queue()
         self._fh      = open(path, 'wb')
         self._count   = 0          # samples written (updated by writer thread)
@@ -195,8 +200,8 @@ class _DiskBuffer:
         self._thread.start()
 
     # Called from audio callback — must be fast
-    def push(self, chunk_int16):
-        self._q.put(chunk_int16.tobytes())
+    def push(self, chunk):
+        self._q.put(chunk.tobytes())
 
     @property
     def sample_count(self):
@@ -208,7 +213,7 @@ class _DiskBuffer:
             if item is None:          # sentinel → shut down
                 break
             self._fh.write(item)
-            self._count += len(item) // 2   # int16 = 2 bytes per sample
+            self._count += len(item) // self._bps
 
     def finish(self):
         """Stop the writer thread and flush/close the file."""
@@ -217,13 +222,15 @@ class _DiskBuffer:
         self._fh.close()
 
     def read_float(self):
-        """Return all recorded samples as a normalised float64 array, then delete the file."""
-        data = np.fromfile(self._path, dtype=np.int16).astype(np.float64) / 32768.0
+        """Return all recorded samples as a float64 array in [-1, 1], then delete the file."""
+        raw = np.fromfile(self._path, dtype=self._dtype).astype(np.float64)
+        if self._dtype == np.int16:
+            raw /= 32768.0
         try:
             os.remove(self._path)
         except OSError:
             pass
-        return data
+        return raw
 
     def discard(self):
         """Finish without reading; delete the temp file."""
@@ -252,33 +259,27 @@ def list_audio_input_devices():
 def refresh_audio_devices():
     """Repopulate the audio source combobox with LAN-XI + STWINMA2 + detected input devices."""
     global _audio_device_map
-    _audio_device_map = {"LAN-XI": None, "STWINMA2 Ch0 (96 kHz)": "__stwinma2__"}
+    _audio_device_map = {"LAN-XI": None, "STWINMA2 Ch0 (192 kHz)": "__stwinma2__"}
 
-    # Identify STWINMA2 device index so we can exclude it from the generic dropdown
-    # (it already has a dedicated "STWINMA2 Ch0 (96 kHz)" entry)
-    _stwin_idx = None
+    # Identify all STWINMA2 device indices (MME + WASAPI instances of the same
+    # physical device) so every duplicate is excluded from the generic dropdown.
+    _stwin_indices = set()
     try:
+        _keywords = ('stwin', 'steval', 'stm32')
         for i, d in enumerate(sd.query_devices()):
-            if d['max_input_channels'] >= 4:
-                n = d['name'].lower()
-                if 'stwin' in n or 'steval' in n or 'stm32' in n:
-                    _stwin_idx = i
-                    break
-        if _stwin_idx is None:
-            for i, d in enumerate(sd.query_devices()):
-                if d['max_input_channels'] >= 4:
-                    _stwin_idx = i
-                    break
+            if d['max_input_channels'] >= 1:
+                if any(k in d['name'].lower() for k in _keywords):
+                    _stwin_indices.add(i)
     except Exception:
         pass
 
-    choices = ["LAN-XI", "STWINMA2 Ch0 (96 kHz)"]
+    choices = ["LAN-XI", "STWINMA2 Ch0 (192 kHz)"]
     stwin_choices = ["Auto-detect"]
     for idx, name in list_audio_input_devices():
         key = f"{name} [{idx}]"
         _audio_device_map[key] = idx
         stwin_choices.append(key)          # all input devices selectable as STWINMA2 target
-        if idx != _stwin_idx:              # exclude STWINMA2 from generic source dropdown
+        if idx not in _stwin_indices:      # exclude all STWINMA2 instances from generic dropdown
             choices.append(key)
 
     if audio_source_combo is not None:
@@ -294,25 +295,45 @@ def refresh_audio_devices():
 def _find_stwinma2_device():
     """Return sounddevice index for STWINMA2, or None if not found.
 
-    First honours the explicit selection in stwinma2_device_var; falls back to
-    auto-detection (4-channel input with STWIN/STEVAL in name, or any 4-ch input).
+    Prefers the WASAPI host-API instance of the device (supports 192 kHz on
+    Windows).  Falls back to the last name-matched entry in the device list,
+    which on Windows is also WASAPI (MME/DS come first, WASAPI last).
     """
     sel = stwinma2_device_var.get() if stwinma2_device_var else "Auto-detect"
     if sel and sel != "Auto-detect":
         idx = _audio_device_map.get(sel)
         if idx is not None:
+            print(f"STWINMA2: using explicit selection '{sel}' → device {idx}")
             return idx
-    devices = sd.query_devices()
-    # Priority 1: name contains STWIN, STEVAL, or STM32
-    for i, d in enumerate(devices):
-        if d['max_input_channels'] >= 4:
-            n = d['name'].lower()
-            if 'stwin' in n or 'steval' in n or 'stm32' in n:
+    try:
+        devices  = sd.query_devices()
+        hostapis = sd.query_hostapis()
+        _kw = ('stwin', 'steval', 'stm32')
+
+        # Collect all name-matched input devices with their host-API name
+        candidates = []
+        for i, d in enumerate(devices):
+            if d['max_input_channels'] >= 1:
+                n = d['name'].lower()
+                if any(k in n for k in _kw):
+                    ha = hostapis[d['hostapi']]['name']
+                    candidates.append((i, d['name'], ha))
+                    print(f"STWINMA2 candidate [{i}] {d['name']}  hostapi={ha}")
+
+        # Priority 1: WASAPI instance
+        for i, name, ha in candidates:
+            if 'wasapi' in ha.lower():
+                print(f"STWINMA2: auto-selected [{i}] {name} (WASAPI)")
                 return i
-    # Priority 2: any 4-channel input
-    for i, d in enumerate(devices):
-        if d['max_input_channels'] >= 4:
+
+        # Priority 2: last in list (Windows orders MME→DS→WASAPI, so last ≈ WASAPI)
+        if candidates:
+            i, name, ha = candidates[-1]
+            print(f"STWINMA2: auto-selected [{i}] {name} (last candidate, hostapi={ha})")
             return i
+
+    except Exception as e:
+        print(f"STWINMA2 device search error: {e}")
     return None
 
 def select_excel_file():
@@ -396,6 +417,56 @@ def display_excel_metadata():
     excel_metadata_text.delete("1.0", tk.END)
     for key, value in loaded_excel_metadata.items():
         excel_metadata_text.insert(tk.END, f"{key}: {value}\n")
+    _refresh_edit_field_combo()
+
+def _refresh_edit_field_combo():
+    fields = [k for k in loaded_excel_metadata if k not in ('Date', 'Timestamp')]
+    edit_field_combo.configure(values=fields)
+    if fields and edit_field_var.get() not in fields:
+        edit_field_var.set(fields[0])
+        edit_value_var.set(loaded_excel_metadata.get(fields[0], ""))
+
+def _on_edit_field_selected(event=None):
+    key = edit_field_var.get()
+    edit_value_var.set(loaded_excel_metadata.get(key, ""))
+
+def _apply_metadata_edit():
+    key = edit_field_var.get()
+    if not key:
+        return
+    loaded_excel_metadata[key] = edit_value_var.get()
+    display_excel_metadata()
+    edit_field_combo.focus()
+
+def advance_to_next_reference():
+    """Move ref_number_entry to the next row in the Excel file and reload metadata."""
+    if excel_metadata_df is None:
+        return
+    ref_col = excel_metadata_df.columns[0]
+    current = ref_number_entry.get().strip()
+    if not current:
+        return
+    try:
+        current_val = int(current)
+    except ValueError:
+        current_val = current
+    # Find the row index of the current reference
+    matches = excel_metadata_df.index[excel_metadata_df[ref_col] == current_val].tolist()
+    if not matches:
+        matches = excel_metadata_df.index[
+            excel_metadata_df[ref_col].astype(str) == str(current)
+        ].tolist()
+    if not matches:
+        return
+    next_idx = matches[0] + 1
+    if next_idx >= len(excel_metadata_df):
+        return   # already at last reference
+    next_ref = str(excel_metadata_df.iloc[next_idx][ref_col])
+    ref_number_entry.delete(0, tk.END)
+    ref_number_entry.insert(0, next_ref)
+    load_metadata_from_excel()
+    messagebox.showinfo("Next Reference", f"Reference advanced to: {next_ref}")
+
 
 def clear_excel_metadata_display():
     global loaded_excel_metadata
@@ -482,7 +553,7 @@ def ensure_temp_dir():
 
 def record_data(on_daq_ready=None):
     global recording, NUM_SAMPLES, DURATION, OUTPUT_WAV_FILE, OUTPUT_PARQUET_FILE
-    global recorded_data, recorded_time_axis, recorded_loadcell, recorded_stwinma2
+    global recorded_data, recorded_time_axis, recorded_loadcell, recorded_stwinma2, recorded_stwin_offset
 
     source      = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
     manual_mode = manual_stop_var is not None and manual_stop_var.get()
@@ -510,33 +581,40 @@ def record_data(on_daq_ready=None):
     lc_enabled   = loadcell_enable_var is not None and loadcell_enable_var.get()
 
     # --- STWINMA2 simultaneous capture setup (skipped when STWINMA2 is the primary source) ---
-    stwin_enabled = (stwinma2_enable_var is not None and stwinma2_enable_var.get()
-                     and source != "STWINMA2 Ch0 (96 kHz)")
-    stwin_buf     = None
-    stwin_stream  = None
+    stwin_enabled    = (stwinma2_enable_var is not None and stwinma2_enable_var.get()
+                        and source != "STWINMA2 Ch0 (192 kHz)")
+    stwin_buf        = None
+    stwin_stream     = None
+    stwin_gate       = threading.Event()   # set() when LAN-XI on_ready fires
+    stwin_gate_t     = [None]              # wall-clock time gate was opened
+    stwin_first_t    = [None]              # wall-clock time of first captured sample
 
     def _stwin_callback(indata, frames_count, time_info, status):
         if status:
             print(f"STWINMA2: {status}")
-        if stwin_buf is not None:
+        if stwin_gate.is_set() and stwin_buf is not None:
+            if stwin_first_t[0] is None:
+                stwin_first_t[0] = time.perf_counter()
             stwin_buf.push(indata[:, 0].copy())
 
     if stwin_enabled:
         _sidx = _find_stwinma2_device()
         if _sidx is None:
             messagebox.showwarning("STWINMA2 Not Found",
-                                   "Could not find a 4-channel USB audio input (STWINMA2). "
+                                   "Could not find a USB audio input (STWINMA2). "
                                    "Recording without STWINMA2.")
             stwin_enabled = False
         else:
             try:
                 _stwin_raw_path = os.path.join(TEMP_DIR, f"_stwin_{int(time.time()*1000)}.raw")
-                stwin_buf    = _DiskBuffer(_stwin_raw_path)
+                stwin_buf    = _DiskBuffer(_stwin_raw_path, dtype=np.float32)
                 stwin_stream = sd.InputStream(
                     device=_sidx, samplerate=STWINMA2_SAMPLE_RATE,
-                    channels=4, dtype='int16', blocksize=STWINMA2_BLOCK_SIZE,
+                    channels=1, dtype='float32', blocksize=STWINMA2_BLOCK_SIZE,
                     callback=_stwin_callback,
                 )
+                # Start early so hardware is warm before LAN-XI is ready.
+                # The gate keeps the buffer closed until on_ready fires.
                 stwin_stream.start()
             except Exception as stwin_err:
                 messagebox.showwarning("STWINMA2 Error",
@@ -564,6 +642,8 @@ def record_data(on_daq_ready=None):
                 while not stop_indefinite.is_set():
                     def _ready_first(orig=on_daq_ready):
                         nonlocal lc_collector
+                        stwin_gate_t[0] = time.perf_counter()
+                        stwin_gate.set()   # open buffer gate — hardware already warm
                         if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
                             lc_collector = LoadCellCollector(mcu_protocol)
                             lc_collector.start(_lc_duration)
@@ -598,6 +678,8 @@ def record_data(on_daq_ready=None):
                 try:
                     def _daq_ready_wrapper(orig=on_daq_ready):
                         nonlocal lc_collector
+                        stwin_gate_t[0] = time.perf_counter()
+                        stwin_gate.set()   # open buffer gate — hardware already warm
                         if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
                             lc_collector = LoadCellCollector(mcu_protocol)
                             lc_collector.start(DURATION)
@@ -625,17 +707,17 @@ def record_data(on_daq_ready=None):
                     return
 
         # ── STWINMA2-only ────────────────────────────────────────────────────────
-        elif source == "STWINMA2 Ch0 (96 kHz)":
+        elif source == "STWINMA2 Ch0 (192 kHz)":
             stwin_idx_only = _find_stwinma2_device()
             if stwin_idx_only is None:
                 recording = False
                 messagebox.showerror("STWINMA2 Not Found",
-                                     "Could not find a 4-channel USB audio input (STWINMA2).\n"
+                                     "Could not find a USB audio input (STWINMA2).\n"
                                      "Check connection and click Refresh.")
                 return
 
             _so_raw_path = os.path.join(TEMP_DIR, f"_stwin_only_{int(time.time()*1000)}.raw")
-            so_buf = _DiskBuffer(_so_raw_path)
+            so_buf = _DiskBuffer(_so_raw_path, dtype=np.float32)
 
             def _stwin_only_cb(indata, fc, ti, status):
                 if status:
@@ -644,7 +726,7 @@ def record_data(on_daq_ready=None):
 
             try:
                 with sd.InputStream(device=stwin_idx_only, samplerate=STWINMA2_SAMPLE_RATE,
-                                    channels=4, dtype='int16', blocksize=STWINMA2_BLOCK_SIZE,
+                                    channels=1, dtype='float32', blocksize=STWINMA2_BLOCK_SIZE,
                                     callback=_stwin_only_cb):
                     if lc_enabled and mcu_protocol is not None and mcu_protocol.connected:
                         lc_collector = LoadCellCollector(mcu_protocol)
@@ -759,6 +841,11 @@ def record_data(on_daq_ready=None):
             stwin_buf.finish()
             if stwin_enabled and stwin_buf.sample_count > 0:
                 recorded_stwinma2 = stwin_buf.read_float()
+                if stwin_gate_t[0] is not None and stwin_first_t[0] is not None:
+                    recorded_stwin_offset = stwin_first_t[0] - stwin_gate_t[0]
+                    print(f"STwin capture lag after gate: {recorded_stwin_offset*1000:.1f} ms")
+                else:
+                    recorded_stwin_offset = None
             else:
                 stwin_buf.discard()
                 recorded_stwinma2 = None
@@ -798,7 +885,7 @@ def record_data(on_daq_ready=None):
     # Write WAV from AI0
     if source == "LAN-XI":
         _sr, max_v = SAMPLE_RATE, 10.0
-    elif source == "STWINMA2 Ch0 (96 kHz)":
+    elif source == "STWINMA2 Ch0 (192 kHz)":
         _sr, max_v = STWINMA2_SAMPLE_RATE, 1.0
     else:
         _sr = FOCUSRITE_SAMPLE_RATE
@@ -810,12 +897,12 @@ def record_data(on_daq_ready=None):
     audio_int16 = np.nan_to_num(data[0] / max_v * 32767, nan=0).astype(np.int16)
     wav.write(OUTPUT_WAV_FILE, _sr, audio_int16)
 
-    # Write STWINMA2 Ch0 WAV at native 96 kHz (int16, normalised)
+    # Write STWINMA2 Ch0 WAV at native 192 kHz (int16, normalised)
     stwin_wav_path = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
     if recorded_stwinma2 is not None:
         stwin_int16 = (np.clip(recorded_stwinma2, -1.0, 1.0) * 32767).astype(np.int16)
         wav.write(stwin_wav_path, STWINMA2_SAMPLE_RATE, stwin_int16)
-    elif source == "STWINMA2 Ch0 (96 kHz)":
+    elif source == "STWINMA2 Ch0 (192 kHz)":
         # standalone source — data[0] is already the normalised ch0 signal
         stwin_int16 = (np.clip(data[0], -1.0, 1.0) * 32767).astype(np.int16)
         wav.write(stwin_wav_path, STWINMA2_SAMPLE_RATE, stwin_int16)
@@ -831,7 +918,7 @@ def save_to_parquet(lc_resampled=None):
         source = audio_source_var.get() if audio_source_var is not None else "LAN-XI"
         if source == "LAN-XI":
             _sr = SAMPLE_RATE
-        elif source == "STWINMA2 Ch0 (96 kHz)":
+        elif source == "STWINMA2 Ch0 (192 kHz)":
             _sr = STWINMA2_SAMPLE_RATE
         else:
             _sr = FOCUSRITE_SAMPLE_RATE
@@ -854,12 +941,27 @@ def save_to_parquet(lc_resampled=None):
         }
         if lc_resampled is not None:
             df_dict["Load Cell (mV)"] = lc_resampled
+
+        # STwin runs at 192 kHz vs LAN-XI at ~51 kHz, so AI04 has ~3.75x more rows.
+        # LAN-XI columns are NaN-padded to match — ~75 % of those rows will be NaN.
+        # Parquet snappy compresses NaN runs well, but the file is still larger.
         if recorded_stwinma2 is not None:
-            from scipy.signal import resample as _resample
-            n_target = len(recorded_time_axis)
-            df_dict["AI04 (norm)"] = _resample(recorded_stwinma2, n_target)
+            n_stwin = len(recorded_stwinma2)
+            n_lanxi = len(recorded_time_axis)
+            if n_stwin > n_lanxi:
+                pad = n_stwin - n_lanxi
+                for k in list(df_dict.keys()):
+                    df_dict[k] = np.concatenate([
+                        np.asarray(df_dict[k], dtype=np.float64),
+                        np.full(pad, np.nan),
+                    ])
+            stwin_time = np.linspace(0, n_stwin / STWINMA2_SAMPLE_RATE,
+                                     n_stwin, endpoint=False)
+            df_dict["AI04 Time (s)"] = stwin_time
+            df_dict["AI04 (norm)"]   = recorded_stwinma2
             metadata["STWINMA2 Sample Rate (Hz)"] = STWINMA2_SAMPLE_RATE
-            metadata["STWINMA2 Channels"] = "Ch0 only (of 4)"
+            if recorded_stwin_offset is not None:
+                metadata["STWINMA2 Start Offset (s)"] = round(recorded_stwin_offset, 6)
 
         df = pd.DataFrame(df_dict)
         df.attrs.update(metadata)
@@ -886,9 +988,9 @@ def upload_to_minio():
             # Get file sizes for verification
             parquet_size = os.path.getsize(OUTPUT_PARQUET_FILE)
             wav_size = os.path.getsize(OUTPUT_WAV_FILE)
-            stwin_wav_path = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
+            stwin_wav_path     = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
             stwin_wav_basename = os.path.basename(stwin_wav_path)
-            has_stwin_wav = os.path.exists(stwin_wav_path)
+            has_stwin_wav      = os.path.exists(stwin_wav_path)
 
             # Direct upload of files
             root.after(0, lambda: upload_button.config(text="Uploading parquet..."))
@@ -932,6 +1034,9 @@ def upload_to_minio():
                                   f"Files uploaded to MinIO successfully!\n\n"
                                   f"Parquet: {parquet_basename}\n"
                                   f"WAV: {wav_basename}{extra}")
+
+                # Advance to the next reference number and load its metadata
+                advance_to_next_reference()
 
                 # Get the uploaded file base name (without extension)
                 uploaded_file_base = os.path.splitext(parquet_basename)[0]
@@ -1037,6 +1142,27 @@ def play_ai3_audio():
             sd.play(audio, SAMPLE_RATE)
         else:
             messagebox.showwarning("No Audio", "No recorded data found. Please record audio first.")
+
+def play_ai4_audio():
+    """Play the recorded STwin AI04 channel at 192 kHz (falls back to 48 kHz if unsupported)."""
+    try:
+        stwin_wav = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
+        if recorded_stwinma2 is not None:
+            audio = _prepare_audio(recorded_stwinma2, STWINMA2_SAMPLE_RATE)
+        elif os.path.exists(stwin_wav):
+            sr, raw = wav.read(stwin_wav)
+            audio = _prepare_audio(raw.astype(np.float32), sr)
+        else:
+            messagebox.showwarning("No Audio", "No AI04 data recorded yet."); return
+        try:
+            sd.play(audio, STWINMA2_SAMPLE_RATE)
+        except Exception:
+            # Device doesn't support 192 kHz — resample to 48 kHz for playback
+            from scipy.signal import resample as _rs
+            n_out = int(len(audio) * 48000 / STWINMA2_SAMPLE_RATE)
+            sd.play(_rs(audio, n_out).astype(np.float32), 48000)
+    except Exception as e:
+        messagebox.showerror("Playback Error", f"Failed to play AI04 audio: {e}")
     except Exception as e:
         messagebox.showerror("Playback Error", f"Failed to play AI3 audio: {str(e)}")
 
@@ -1415,17 +1541,19 @@ def on_closing():
 # Mel Spectrogram helpers
 # ---------------------------------------------------------------------------
 
-def _compute_mel_spectrogram(signal, sr, n_mels=128):
+def _compute_mel_spectrogram(signal, sr, n_mels=128, f_max=None):
     """Compute mel spectrogram with scipy+numpy; returns (mel_db, times, mel_freqs_hz)."""
     from scipy.signal import stft as _stft
     # Scale n_fft with sample rate so low-frequency mel bands always have
     # enough FFT bins (bin width < ~25 Hz keeps triangular filters non-zero).
-    n_fft = 2048 if sr <= 52000 else 4096
+    n_fft = 2048 if sr <= 52000 else (4096 if sr <= 100_000 else 8192)
     hop   = n_fft // 4
     _, t, Zxx = _stft(signal, fs=sr, nperseg=n_fft, noverlap=n_fft - hop, window="hann")
     power = np.abs(Zxx) ** 2
 
-    f_min, f_max = 20.0, sr / 2.0
+    f_min = 20.0
+    if f_max is None:
+        f_max = sr / 2.0
     m_min = 2595.0 * np.log10(1 + f_min / 700.0)
     m_max = 2595.0 * np.log10(1 + f_max / 700.0)
     mel_pts = np.linspace(m_min, m_max, n_mels + 2)
@@ -1510,7 +1638,7 @@ def _build_mel_tab(notebook, root_win):
         elif ch == "AI04":
             stwin_wav = OUTPUT_WAV_FILE.replace('.wav', '_stwinma2.wav')
             if not os.path.exists(stwin_wav):
-                status_var.set("No STWINMA2 WAV found. Record with source 'STWINMA2 Ch0 (96 kHz)' or enable 'Also record STWINMA2 Ch0'."); return
+                status_var.set("No STWINMA2 WAV found. Record with source 'STWINMA2 Ch0 (192 kHz)' or enable 'Also record STWINMA2 Ch0'."); return
             sr, raw = wav.read(stwin_wav)
             sig = raw.astype(np.float32)
             if sig.ndim > 1:
@@ -1533,7 +1661,8 @@ def _build_mel_tab(notebook, root_win):
         root_win.update_idletasks()
 
         try:
-            mel_db, t, mel_hz = _compute_mel_spectrogram(sig, sr, n_mels)
+            mel_fmax = 80_000.0 if ch == "AI04" else None
+            mel_db, t, mel_hz = _compute_mel_spectrogram(sig, sr, n_mels, f_max=mel_fmax)
         except Exception as exc:
             status_var.set(f"Error: {exc}"); return
 
@@ -1555,10 +1684,10 @@ def _build_mel_tab(notebook, root_win):
             title_suffix = ""
         ax.set_title(f"Mel Spectrogram – {ch}{title_suffix}")
 
-        # Frequency axis ticks — extend to 48 kHz for STWINMA2 (96 kHz Nyquist)
+        # Frequency axis ticks — extend to 80 kHz for STWINMA2 (192 kHz, capped at 80 kHz)
         tick_hz = [100, 500, 1000, 2000, 5000, 10000, 20000]
         if ch == "AI04":
-            tick_hz += [32000, 48000]
+            tick_hz += [32000, 48000, 64000, 80000]
         valid   = [f for f in tick_hz if mel_hz[0] <= f <= mel_hz[-1]]
         idx     = [float(np.searchsorted(mel_hz, f)) for f in valid]
         ax.set_yticks(idx)
@@ -3629,6 +3758,21 @@ load_metadata_btn.pack(side=tk.LEFT)
 excel_metadata_text = tk.Text(excel_section, height=6, width=40)
 excel_metadata_text.pack(fill=tk.X, pady=2)
 
+# Edit a single metadata field
+edit_field_frame = tk.Frame(excel_section)
+edit_field_frame.pack(fill=tk.X, pady=(2, 0))
+tk.Label(edit_field_frame, text="Edit field:").pack(side=tk.LEFT)
+edit_field_var = tk.StringVar()
+edit_field_combo = ttk.Combobox(edit_field_frame, textvariable=edit_field_var,
+                                 values=[], width=16, state="readonly")
+edit_field_combo.pack(side=tk.LEFT, padx=(4, 4))
+edit_field_combo.bind("<<ComboboxSelected>>", _on_edit_field_selected)
+edit_value_var = tk.StringVar()
+edit_value_entry = tk.Entry(edit_field_frame, textvariable=edit_value_var, width=16)
+edit_value_entry.pack(side=tk.LEFT, padx=(0, 4))
+tk.Button(edit_field_frame, text="Update",
+          command=lambda: _apply_metadata_edit()).pack(side=tk.LEFT)
+
 # Additional metadata section
 additional_section = tk.LabelFrame(control_frame, text="Additional Metadata", padx=5, pady=5)
 additional_section.pack(anchor="e", fill=tk.X, pady=5)
@@ -3669,12 +3813,12 @@ audio_source_combo = ttk.Combobox(src_row, textvariable=audio_source_var, width=
 audio_source_combo.pack(side=tk.LEFT, padx=(4, 2))
 ttk.Button(src_row, text="Refresh", command=refresh_audio_devices).pack(side=tk.LEFT)
 
-# STWINMA2 simultaneous capture (USB 4-mic array, Ch0 only @ 96 kHz)
-stwin_section = tk.LabelFrame(recording_section, text="STWINMA2 (4-mic array)", padx=4, pady=4)
+# STWINMA2 simultaneous capture (USB 1-ch, 192 kHz, Ch0 only @ 192 kHz)
+stwin_section = tk.LabelFrame(recording_section, text="STWINMA2 (1-ch, 192 kHz)", padx=4, pady=4)
 stwin_section.pack(fill=tk.X, pady=(0, 3))
 
-stwinma2_enable_var = tk.BooleanVar(value=False)
-tk.Checkbutton(stwin_section, text="Also record STWINMA2 Ch0 (96 kHz, USB)",
+stwinma2_enable_var = tk.BooleanVar(value=True)
+tk.Checkbutton(stwin_section, text="Also record STWINMA2 Ch0 (192 kHz, USB)",
                variable=stwinma2_enable_var).pack(anchor="w")
 
 stwin_dev_row = tk.Frame(stwin_section)
@@ -3719,6 +3863,8 @@ play_ai2_button = tk.Button(play_btn_frame, text="Play AI2", command=play_ai2_au
 play_ai2_button.pack(side=tk.LEFT, padx=(4, 0))
 play_ai3_button = tk.Button(play_btn_frame, text="Play AI3 Mic", command=play_ai3_audio)
 play_ai3_button.pack(side=tk.LEFT, padx=(4, 0))
+play_ai4_button = tk.Button(play_btn_frame, text="Play AI04", command=play_ai4_audio)
+play_ai4_button.pack(side=tk.LEFT, padx=(4, 0))
 stop_button = tk.Button(play_btn_frame, text="Stop", command=stop_audio, fg="red")
 stop_button.pack(side=tk.LEFT, padx=(4, 0))
 
