@@ -719,9 +719,14 @@ def record_data(on_daq_ready=None):
             _so_raw_path = os.path.join(TEMP_DIR, f"_stwin_only_{int(time.time()*1000)}.raw")
             so_buf = _DiskBuffer(_so_raw_path, dtype=np.float32)
 
+            so_skip = [3]  # discard first 3 blocks (~32 ms) to skip hardware init transient
+
             def _stwin_only_cb(indata, fc, ti, status):
                 if status:
                     print(f"STWINMA2: {status}")
+                if so_skip[0] > 0:
+                    so_skip[0] -= 1
+                    return
                 so_buf.push(indata[:, 0].copy())
 
             try:
