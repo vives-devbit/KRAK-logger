@@ -35,46 +35,6 @@ def create_minio_client():
     )
 
 
-def list_s3_files(sort_by="name", sort_order="asc"):
-    """List MinIO files with sorting options
-
-    Args:
-        sort_by: "name" or "time"
-        sort_order: "asc" (1-9) or "desc" (9-1)
-    """
-    try:
-        minio_client = create_minio_client()
-        objects = minio_client.list_objects(BUCKET_NAME)
-
-        files_info = {}
-        for obj in objects:
-            if obj.object_name.endswith('.parquet'):  # Only process parquet files
-                base_name = os.path.splitext(os.path.basename(obj.object_name))[0]
-                if base_name not in files_info:
-                    files_info[base_name] = {
-                        'name': base_name,
-                        'last_modified': obj.last_modified
-                    }
-
-        if sort_by == "time":
-            sorted_files = sorted(files_info.values(),
-                                  key=lambda x: x['last_modified'],
-                                  reverse=(sort_order == "desc"))
-        else:  # sort by name
-            sorted_files = sorted(files_info.values(),
-                                  key=lambda x: x['name'],
-                                  reverse=(sort_order == "desc"))
-
-        return [file_info['name'] for file_info in sorted_files]
-
-    except S3Error as e:
-        print(f"MinIO Error listing files: {e}")
-        return []
-    except Exception as e:
-        print(f"Error listing files: {e}")
-        return []
-
-
 def update_search_index_on_server(parquet_filename, metadata_dict, dataframe):
     """
     Update the search index on the server with new metadata for an uploaded file

@@ -13,7 +13,12 @@
       "Bash(./.venv_u0173601/Scripts/python.exe -m py_compile krak_logger_gui.py krak_logger/__init__.py krak_logger/config.py krak_logger/lanxi_daq.py krak_logger/loadcell.py krak_logger/disk_buffer.py krak_logger/audio_devices.py krak_logger/storage.py krak_logger/ml.py krak_logger/mel_tab.py krak_logger/sp_tabs.py krak_logger/logger_tab.py krak_logger/app.py)",
       "Bash(./.venv_u0173601/Scripts/python.exe -c ' *)",
       "Read(//c/Users/u0173601/AppData/Local/stm32cube/bundles//**)",
-      "Read(//c/Users/u0173601/AppData/Local/stm32cube/bundles/**)"
+      "Read(//c/Users/u0173601/AppData/Local/stm32cube/bundles/**)",
+      "Bash(./.venv_u0173601/Scripts/python.exe -c \"import krak_logger_gui; import krak_editor_gui\")",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(./.venv_u0173601/Scripts/python.exe -m py_compile krak_logger/logger_tab.py)",
+      "Read(//c/c/Users/u0173601/OneDrive - Hogeschool VIVES/KRAK/mobile cookie crusher/KRAKalyser_python/KRAK-logger/**)",
+      "Bash(./.venv_u0173601/Scripts/python.exe -m py_compile krak_logger/logger_tab.py krak_logger/storage.py)"
     ]
   }
 }

@@ -1,11 +1,8 @@
 """KRAK Logger tab: recording, metadata, playback, upload and file management."""
 
 import datetime
-import io
 import os
 import shutil
-import subprocess
-import sys
 import threading
 import time
 import tkinter as tk
@@ -18,8 +15,6 @@ import scipy.io.wavfile as wav
 import sounddevice as sd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.signal import butter, sosfilt
-
-from mcu_tabs import _F
 
 from . import audio_devices
 from .audio_devices import LANXI_SOURCE, STWIN_AUTO_DETECT, STWINMA2_SOURCE
@@ -34,46 +29,19 @@ from .config import (
 )
 from .disk_buffer import DiskBuffer
 from .loadcell import LoadCellCollector
-from .storage import create_minio_client, list_s3_files, update_search_index_on_server
+from .storage import create_minio_client, update_search_index_on_server
 
 # AI04 clipping detection (STwin float32 stream saturates at +-1.0).
 CLIP_THRESHOLD = 0.99
 CLIP_MIN_RUN = 4   # consecutive saturated samples required to count as clipping
 
 
-def launch_editor():
-    """Launch the KRAK Editor in a separate process"""
-    try:
-        # Check if we're running as an executable or as a script
-        if getattr(sys, 'frozen', False):
-            # Running as executable - look for krak_editor.exe in same directory
-            exe_dir = os.path.dirname(sys.executable)
-            editor_exe = os.path.join(exe_dir, "krak_editor.exe")
-
-            if os.path.exists(editor_exe):
-                subprocess.Popen([editor_exe], cwd=exe_dir)
-                print("Editor launched successfully from executable")
-            else:
-                messagebox.showerror("Editor Not Found",
-                    f"Editor executable not found at: {editor_exe}\n\n"
-                    f"Make sure krak_editor.exe is in the same directory as krak_logger.exe")
-        else:
-            # Running as script - use Python interpreter
-            from .config import SCRIPT_DIR
-            editor_path = os.path.join(SCRIPT_DIR, "krak_editor_gui.py")
-            subprocess.Popen([sys.executable, editor_path])
-            print("Editor launched successfully from script")
-
-    except Exception as e:
-        messagebox.showerror("Launch Error", f"Failed to launch editor: {str(e)}")
-
-
 class LoggerTab:
     """The KRAK Logger notebook tab.
 
     Owns the recording pipeline (LAN-XI / STWINMA2 / generic sounddevice
-    sources, optional load-cell logging), the metadata panel, playback,
-    MinIO upload and the S3 file browser.
+    sources, optional load-cell logging), the metadata panel, playback
+    and MinIO upload.
     """
 
     def __init__(self, root, parent, mcu_protocol, lanxi, lanxi_sample_rate,
@@ -97,20 +65,15 @@ class LoggerTab:
         self.recorded_stwin_offset = None  # seconds between gate-open and first captured sample
         self.stop_indefinite = threading.Event()   # set to end a manual-stop recording
 
-        # Metadata / file-browser state
-        self.loaded_df = None
-        self.current_sample_name = None
+        # Metadata state
         self.excel_metadata_df = None
         self.excel_file_path = None
         self.loaded_excel_metadata = {}
-        self.sort_by = "time"      # default: sort by time
-        self.sort_order = "desc"   # default: newest first
 
         self._audio_device_map = {}   # display name -> sd device index
 
         self._build_ui(duration_var)
         self.refresh_audio_devices()
-        self.refresh_file_list()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -250,49 +213,6 @@ class LoggerTab:
         tk.Button(action_row, text="Save to Disk", command=self.save_to_disk).pack(side=tk.LEFT, padx=(0, 4))
         self.upload_button = tk.Button(action_row, text="Upload to MinIO", command=self.upload_to_minio)
         self.upload_button.pack(side=tk.LEFT)
-
-        # -- File list display for S3 files ----------------------------------
-        file_section = tk.LabelFrame(control_frame, text="File Management", padx=5, pady=5)
-        file_section.pack(anchor="e", fill=tk.BOTH, expand=True, pady=(10, 5))
-
-        tk.Label(file_section, text="Select sample from S3:").pack(anchor="e", pady=(5, 0))
-
-        sort_frame = tk.Frame(file_section)
-        sort_frame.pack(anchor="e", pady=(5, 0))
-
-        tk.Label(sort_frame, text="Sort by:").pack(side=tk.LEFT, padx=(0, 5))
-        self.sort_by_var = tk.StringVar(value=self.sort_by)
-        sort_by_combo = ttk.Combobox(sort_frame, textvariable=self.sort_by_var,
-                                     values=["name", "time"], width=8, state="readonly")
-        sort_by_combo.pack(side=tk.LEFT, padx=(0, 10))
-        sort_by_combo.bind('<<ComboboxSelected>>', lambda e: self.change_sort_criteria())
-
-        tk.Label(sort_frame, text="Order:").pack(side=tk.LEFT, padx=(0, 5))
-        self.sort_order_var = tk.StringVar(value=self.sort_order)
-        sort_order_combo = ttk.Combobox(sort_frame, textvariable=self.sort_order_var,
-                                        values=["asc", "desc"], width=6, state="readonly")
-        sort_order_combo.pack(side=tk.LEFT)
-        sort_order_combo.bind('<<ComboboxSelected>>', lambda e: self.change_sort_criteria())
-
-        file_list_frame = tk.Frame(file_section)
-        file_list_frame.pack(anchor="e", fill=tk.BOTH, pady=5)
-
-        scrollbar = tk.Scrollbar(file_list_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.dropdown_var = tk.StringVar()
-        self.file_listbox = tk.Listbox(file_list_frame, height=8, width=45,
-                                       yscrollcommand=scrollbar.set, font=_F()["mono"])
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.file_listbox.yview)
-        self.file_listbox.bind('<<ListboxSelect>>', self._on_file_select)
-
-        tk.Button(file_section, text="Load Sample", command=self.load_sample).pack(anchor="e")
-
-        self.metadata_text = tk.Text(file_section, height=8, width=40)
-        self.metadata_text.pack(anchor="e")
-
-        tk.Button(file_section, text="Editor", command=launch_editor).pack(anchor="e", pady=(10, 0))
 
         # -- Plot ---------------------------------------------------------------
         self.fig = plt.figure(figsize=(10, 4))
@@ -1047,11 +967,6 @@ class LoggerTab:
                     # Advance to the next reference number and load its metadata
                     self.advance_to_next_reference()
 
-                    # Refresh file list and auto-select the uploaded file
-                    uploaded_file_base = os.path.splitext(parquet_basename)[0]
-                    self.refresh_file_list()
-                    self.select_uploaded_file(uploaded_file_base)
-
                 self.root.after(0, success_update)
 
             except Exception as e:
@@ -1225,58 +1140,3 @@ class LoggerTab:
         self.fig.tight_layout(pad=1.5)
         self.fig.canvas.draw()
 
-    # ------------------------------------------------------------------
-    # S3 file browser
-    # ------------------------------------------------------------------
-
-    def refresh_file_list(self):
-        """Refresh the file listbox with current S3 files"""
-        self.file_listbox.delete(0, tk.END)
-        for file in list_s3_files(self.sort_by, self.sort_order):
-            self.file_listbox.insert(tk.END, file)
-
-    def change_sort_criteria(self):
-        """Handle sort criteria changes and refresh the list"""
-        self.sort_by = self.sort_by_var.get()
-        self.sort_order = self.sort_order_var.get()
-        self.refresh_file_list()
-
-    def select_uploaded_file(self, file_base_name):
-        """Select and highlight the uploaded file in the listbox"""
-        for i in range(self.file_listbox.size()):
-            if self.file_listbox.get(i) == file_base_name:
-                self.file_listbox.selection_clear(0, tk.END)
-                self.file_listbox.selection_set(i)
-                self.file_listbox.see(i)  # Scroll to make it visible
-                self.dropdown_var.set(file_base_name)
-                break
-
-    def _on_file_select(self, event):
-        selection = self.file_listbox.curselection()
-        if selection:
-            self.dropdown_var.set(self.file_listbox.get(selection[0]))
-
-    def load_sample(self):
-        try:
-            base_name = self.dropdown_var.get()
-            parquet_key = f"{base_name}.parquet"
-            minio_client = create_minio_client()
-
-            # Get object from MinIO
-            response = minio_client.get_object(BUCKET_NAME, parquet_key)
-            df = pd.read_parquet(io.BytesIO(response.read()))
-
-            lc_col     = df["Load Cell (mV)"].values       if "Load Cell (mV)"       in df.columns else None
-            stwin_col  = (df["AI04 (norm)"].values         if "AI04 (norm)"          in df.columns else
-                          df["STWINMA2 Ch0 (norm)"].values if "STWINMA2 Ch0 (norm)"  in df.columns else None)
-            self.update_plot(df["Time (s)"], [df["AI0 (V)"], df["AI1 (V)"], df["AI2 (V)"], df["AI3 (mV)"] / 1000],
-                             loadcell=lc_col, title=base_name, stwinma2=stwin_col)
-            self.metadata_text.delete("1.0", tk.END)
-            for key, val in df.attrs.items():
-                self.metadata_text.insert(tk.END, f"{key}: {val}\n")
-
-            # Store the loaded dataframe for metadata updates
-            self.loaded_df = df
-            self.current_sample_name = base_name
-        except Exception as e:
-            messagebox.showerror("Load Error", str(e))
