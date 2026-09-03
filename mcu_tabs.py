@@ -93,7 +93,7 @@ def _append_log(text_widget: tk.Text, msg: str, max_chars: int = 8000) -> None:
 
 def _indicator(parent, color="gray") -> tk.Label:
     """A small coloured circle label used as a status indicator."""
-    lbl = tk.Label(parent, text="●", font=_F()["indicator"], fg=color)
+    lbl = tk.Label(parent, text="?", font=_F()["indicator"], fg=color)
     return lbl
 
 
@@ -214,7 +214,7 @@ class MeasurementTab(_MCUTab):
     def _build(self):
         pad = {"padx": 8, "pady": 5}
 
-        # ── Method 1: MEASMAXFORCE ──────────────────────────────────────────
+        # -- Method 1: MEASMAXFORCE ------------------------------------------
         gf1 = ttk.LabelFrame(self, text="Method 1 – Max Force Measurement (MEASMAXFORCE)", padding=8)
         gf1.pack(fill=tk.X, **pad)
 
@@ -228,7 +228,7 @@ class MeasurementTab(_MCUTab):
         ttk.Label(row1s, text="Status:", font=_F()["small_bold"]).pack(side=tk.LEFT)
         self._mf_status = ttk.Label(row1s, text="Ready", foreground="gray"); self._mf_status.pack(side=tk.LEFT, padx=4)
 
-        # ── Method 2: MEASTHRESHOLD ─────────────────────────────────────────
+        # -- Method 2: MEASTHRESHOLD -----------------------------------------
         gf2 = ttk.LabelFrame(self, text="Method 2 – Threshold Measurement (MEASTHRESHOLD)", padding=8)
         gf2.pack(fill=tk.X, **pad)
 
@@ -244,7 +244,7 @@ class MeasurementTab(_MCUTab):
         ttk.Label(row2s, text="Status:", font=_F()["small_bold"]).pack(side=tk.LEFT)
         self._th_status = ttk.Label(row2s, text="Ready", foreground="gray"); self._th_status.pack(side=tk.LEFT, padx=4)
 
-        # ── Control / log ───────────────────────────────────────────────────
+        # -- Control / log ---------------------------------------------------
         gf3 = ttk.LabelFrame(self, text="Measurement Control", padding=8)
         gf3.pack(fill=tk.BOTH, expand=True, **pad)
 
@@ -282,12 +282,12 @@ class MeasurementTab(_MCUTab):
         self._log.config(yscrollcommand=sb.set)
 
         btns = ttk.Frame(gf3); btns.pack(anchor="w", pady=(5, 0))
-        self._stop_btn = tk.Button(btns, text="⚠ Stop Measurement", command=self._stop,
+        self._stop_btn = tk.Button(btns, text="? Stop Measurement", command=self._stop,
                                    state="disabled", bg="#ff4444", fg="white", font=_F()["small_bold"], padx=12, pady=5)
         self._stop_btn.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btns, text="Clear Log", command=self._clear_log).pack(side=tk.LEFT)
 
-    # ── Commands ────────────────────────────────────────────────────────────
+    # -- Commands ------------------------------------------------------------
 
     def _arm_measurement(self, cmd: str, status_lbl):
         """Common logic for both measurement modes. If a DAQ is linked, starts
@@ -300,16 +300,16 @@ class MeasurementTab(_MCUTab):
 
         if self._start_daq is not None:
             status_lbl.config(text="Starting DAQ…", foreground="orange")
-            _append_log(self._log, f"[{_ts()}] Starting DAQ → will send '{cmd}' when streaming\n")
+            _append_log(self._log, f"[{_ts()}] Starting DAQ ? will send '{cmd}' when streaming\n")
 
             def _on_daq_ready():
                 # Called from recording background thread – send is thread-safe
                 self.send(cmd)
                 # Marshal UI updates back to main thread
                 self.after(0, lambda: status_lbl.config(
-                    text="DAQ streaming – MCU triggered ✓", foreground="blue"))
+                    text="DAQ streaming – MCU triggered ?", foreground="blue"))
                 self.after(0, lambda: _append_log(
-                    self._log, f"[{_ts()}] DAQ ready → sent '{cmd}' to MCU\n"))
+                    self._log, f"[{_ts()}] DAQ ready ? sent '{cmd}' to MCU\n"))
 
             self._start_daq(on_daq_ready=_on_daq_ready)
         else:
@@ -323,8 +323,8 @@ class MeasurementTab(_MCUTab):
         except ValueError:
             messagebox.showwarning("Input Error", "Enter a valid force value (N).")
             return
-        if not (0 < f <= 600):
-            messagebox.showwarning("Input Error", "Force must be between 0 and 600 N.")
+        if not (0 < f <= 850):
+            messagebox.showwarning("Input Error", "Force must be between 0 and 850 N.")
             return
         self._arm_measurement(f"MEASMAXFORCE {f:.1f}", self._mf_status)
 
@@ -335,8 +335,8 @@ class MeasurementTab(_MCUTab):
         except ValueError:
             messagebox.showwarning("Input Error", "Enter valid numeric values.")
             return
-        if not (0 < f <= 600):
-            messagebox.showwarning("Input Error", "Threshold force must be 0–600 N.")
+        if not (0 < f <= 850):
+            messagebox.showwarning("Input Error", "Threshold force must be 0–850 N.")
             return
         if d <= 0:
             messagebox.showwarning("Input Error", "Extra distance must be > 0.")
@@ -358,7 +358,7 @@ class MeasurementTab(_MCUTab):
         self._log.delete("1.0", tk.END)
         self._log.config(state="disabled")
 
-    # ── Response handling ───────────────────────────────────────────────────
+    # -- Response handling ---------------------------------------------------
 
     def handle_line(self, line: str):
         if line.startswith("Starting measurement until max force"):
@@ -368,7 +368,7 @@ class MeasurementTab(_MCUTab):
             self._mf_status.config(text="Retracting 40 mm…", foreground="orange")
             _append_log(self._log, f"[{_ts()}] Force reached – retracting 20 mm\n")
         elif line == "MEASMAXFORCE:COMPLETE":
-            self._mf_status.config(text="Complete ✓", foreground="green")
+            self._mf_status.config(text="Complete ?", foreground="green")
             self._mf_btn.config(state="normal")
             self._th_btn.config(state="normal")
             self._stop_btn.config(state="disabled")
@@ -386,7 +386,7 @@ class MeasurementTab(_MCUTab):
             self._th_status.config(text="Retracting 40 mm…", foreground="orange")
             _append_log(self._log, f"[{_ts()}] Extra distance done – retracting 20 mm\n")
         elif line == "MEASTHRESHOLD:COMPLETE":
-            self._th_status.config(text="Complete ✓", foreground="green")
+            self._th_status.config(text="Complete ?", foreground="green")
             self._mf_btn.config(state="normal")
             self._th_btn.config(state="normal")
             self._stop_btn.config(state="disabled")
@@ -444,16 +444,16 @@ class PositionTab(_MCUTab):
     def _build(self):
         pad = {"padx": 8, "pady": 5}
 
-        # ── Movement ────────────────────────────────────────────────────────
+        # -- Movement --------------------------------------------------------
         gm = ttk.LabelFrame(self, text="Movement Control", padding=8)
         gm.pack(fill=tk.X, **pad)
 
         btns = ttk.Frame(gm); btns.pack(fill=tk.X, pady=(0, 8))
-        self._up_btn = tk.Button(btns, text="▲  UP", height=2, width=18,
+        self._up_btn = tk.Button(btns, text="?  UP", height=2, width=18,
                                  font=_F()["btn_large"], state="disabled",
                                  command=lambda: (self.send("UP"), self._clear_endstops()))
         self._up_btn.pack(side=tk.LEFT, padx=(0, 6))
-        self._dn_btn = tk.Button(btns, text="▼  DOWN", height=2, width=18,
+        self._dn_btn = tk.Button(btns, text="?  DOWN", height=2, width=18,
                                  font=_F()["btn_large"], state="disabled",
                                  command=lambda: (self.send("DOWN"), self._clear_endstops()))
         self._dn_btn.pack(side=tk.LEFT)
@@ -467,7 +467,7 @@ class PositionTab(_MCUTab):
                                      command=self._on_speed_change)
         self._spd_slider.pack(side=tk.LEFT)
 
-        # ── Home ─────────────────────────────────────────────────────────────
+        # -- Home -------------------------------------------------------------
         gh = ttk.LabelFrame(self, text="Home Position", padding=8)
         gh.pack(fill=tk.X, **pad)
 
@@ -487,15 +487,15 @@ class PositionTab(_MCUTab):
         self._home_status = ttk.Label(hrow, text="", font=_F()["small_bold"])
         self._home_status.pack(side=tk.LEFT)
 
-        # ── Emergency stop ───────────────────────────────────────────────────
+        # -- Emergency stop ---------------------------------------------------
         ge = ttk.LabelFrame(self, text="Emergency", padding=8)
         ge.pack(fill=tk.X, **pad)
-        self._stop_btn = tk.Button(ge, text="⚠  STOP", height=2, bg="#ff4444",
+        self._stop_btn = tk.Button(ge, text="?  STOP", height=2, bg="#ff4444",
                                    fg="white", font=_F()["btn_stop"],
                                    state="disabled", command=lambda: self.send("STOP"))
         self._stop_btn.pack(fill=tk.X, padx=4)
 
-        # ── Status ───────────────────────────────────────────────────────────
+        # -- Status -----------------------------------------------------------
         gs = ttk.LabelFrame(self, text="Status and Feedback", padding=8)
         gs.pack(fill=tk.BOTH, expand=True, **pad)
 
@@ -519,7 +519,7 @@ class PositionTab(_MCUTab):
                                font=_F()["mono"])
         self._rx_log.pack(fill=tk.BOTH, expand=True)
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
+    # -- Helpers --------------------------------------------------------------
 
     def _on_speed_change(self, val=None):
         v = int(self._spd_var.get())
@@ -545,7 +545,7 @@ class PositionTab(_MCUTab):
     def _append_rx(self, msg: str):
         _append_log(self._rx_log, msg)
 
-    # ── Response handling ─────────────────────────────────────────────────────
+    # -- Response handling -----------------------------------------------------
 
     def handle_line(self, line: str):
         if line.startswith("ENDSTOP_TOP:"):
@@ -561,7 +561,7 @@ class PositionTab(_MCUTab):
         elif line.startswith("POS:"):
             self._pos_lbl.config(text="Pos: " + line.split(":")[1].strip() + " mm")
         elif line.startswith("HOME:OK"):
-            self._home_status.config(text="At home position ✓", foreground="green")
+            self._home_status.config(text="At home position ?", foreground="green")
             self._append_rx("Homing complete.\n")
         elif line.startswith("END:IN"):
             self._es_top.config(text="TRIGGERED", foreground="red")
@@ -574,7 +574,7 @@ class PositionTab(_MCUTab):
         elif line.startswith("ERR:OVERCURRENT"):
             self._append_rx("SAFETY: Overcurrent – motor stopped.\n")
         elif line.startswith("ERR:ABSOLUTE_LIMIT"):
-            self._append_rx("SAFETY: Absolute force limit (600 N) reached.\n")
+            self._append_rx("SAFETY: Absolute force limit (850 N) reached.\n")
         elif line.startswith("ERR:STALL"):
             self._append_rx("SAFETY: Motor stall detected.\n")
         elif line.startswith("ERR:DUTY_CYCLE"):
@@ -691,7 +691,7 @@ class SpeedCalTab(_MCUTab):
             return
         self.send(f"{d:.1f}")
         expected = 7247700.0 / d
-        _append_log(self._log, f"[{_ts()}] Submitted {d:.1f} mm → expected CPM ≈ {expected:.2f}\n")
+        _append_log(self._log, f"[{_ts()}] Submitted {d:.1f} mm ? expected CPM ˜ {expected:.2f}\n")
         self._disp_entry.delete(0, tk.END)
 
     def handle_line(self, line: str):
@@ -709,7 +709,7 @@ class SpeedCalTab(_MCUTab):
         elif "Calibration complete" in line:
             self._waiting_disp = False
             self._disp_frame.pack_forget()
-            self._status_lbl.config(text="Calibration complete ✓", foreground="green")
+            self._status_lbl.config(text="Calibration complete ?", foreground="green")
             self._start_btn.config(state="normal")
             _append_log(self._log, f"[{_ts()}] Stored in EEPROM.\n")
 
@@ -739,7 +739,7 @@ class PosCalTab(_MCUTab):
         # Step 1
         self._step1 = ttk.LabelFrame(self, text="Step 1 – Initiate Re-calibration", padding=8)
         self._step1.pack(fill=tk.X, **pad)
-        ttk.Label(self._step1, text="⚠ This temporarily disables the inner endstop.\n"
+        ttk.Label(self._step1, text="? This temporarily disables the inner endstop.\n"
                   "Jog to the desired home position, then confirm.",
                   foreground="darkorange", font=_F()["small_bold"]).pack(anchor="w", pady=(0, 8))
         row = ttk.Frame(self._step1); row.pack(anchor="w")
@@ -753,17 +753,17 @@ class PosCalTab(_MCUTab):
         # Step 2 (hidden)
         self._step2 = ttk.LabelFrame(self, text="Step 2 – Jog to New Home Position", padding=8)
         ttk.Label(self._step2,
-                  text="Endstop disabled. Use ▲/▼ to move to new home (position may go negative).",
+                  text="Endstop disabled. Use ?/? to move to new home (position may go negative).",
                   wraplength=600).pack(anchor="w", pady=(0, 8))
 
         jog = ttk.Frame(self._step2); jog.pack(anchor="w", pady=(0, 8))
-        self._jog_up = tk.Button(jog, text="▲  UP", width=10, height=2,
+        self._jog_up = tk.Button(jog, text="?  UP", width=10, height=2,
                                  font=_F()["btn_jog"], command=lambda: self.send("UP"))
         self._jog_up.pack(side=tk.LEFT, padx=(0, 6))
-        self._jog_dn = tk.Button(jog, text="▼  DOWN", width=10, height=2,
+        self._jog_dn = tk.Button(jog, text="?  DOWN", width=10, height=2,
                                  font=_F()["btn_jog"], command=lambda: self.send("DOWN"))
         self._jog_dn.pack(side=tk.LEFT, padx=(0, 6))
-        self._jog_stop = tk.Button(jog, text="■  STOP", width=10, height=2,
+        self._jog_stop = tk.Button(jog, text="¦  STOP", width=10, height=2,
                                    font=_F()["btn_jog"], bg="#ff4444", fg="white",
                                    command=lambda: self.send("STOP"))
         self._jog_stop.pack(side=tk.LEFT)
@@ -774,7 +774,7 @@ class PosCalTab(_MCUTab):
         self._cur_pos.pack(side=tk.LEFT)
 
         confirm = ttk.Frame(self._step2); confirm.pack(anchor="w")
-        self._set_here_btn = tk.Button(confirm, text="✓  Set Home Here (CALPOS)",
+        self._set_here_btn = tk.Button(confirm, text="?  Set Home Here (CALPOS)",
                                        font=_F()["small_bold"], bg="#44bb44", fg="white",
                                        padx=10, pady=5, command=self._set_home_here)
         self._set_here_btn.pack(side=tk.LEFT, padx=(0, 8))
@@ -846,7 +846,7 @@ class LoadCellCalTab(_MCUTab):
         # Step 1
         g1 = ttk.LabelFrame(self, text="Step 1 – Capture Point 1 (unloaded or known weight)", padding=8)
         g1.pack(fill=tk.X, **pad)
-        ttk.Label(g1, text="Enter force currently on load cell (typically 0 N). Force must be ≥ 0.").pack(anchor="w")
+        ttk.Label(g1, text="Enter force currently on load cell (typically 0 N). Force must be = 0.").pack(anchor="w")
         r1 = ttk.Frame(g1); r1.pack(anchor="w", pady=(6, 0))
         ttk.Label(r1, text="Force 1 (N):").pack(side=tk.LEFT)
         self._f1_entry = ttk.Entry(r1, width=10); self._f1_entry.insert(0, "0.0"); self._f1_entry.pack(side=tk.LEFT, padx=5)
@@ -881,9 +881,9 @@ class LoadCellCalTab(_MCUTab):
         self._apn_lbl = ttk.Label(rr, text="—", font=_F()["value_lg"], foreground="green"); self._apn_lbl.grid(row=0, column=3, sticky="w")
 
         # Quick single-point cal
-        gq = ttk.LabelFrame(self, text="Quick Cal – Fixed Tare (0 N = ADC 50)", padding=8)
+        gq = ttk.LabelFrame(self, text="Quick Cal – Fixed Tare (0 N = ADC 36)", padding=8)
         gq.pack(fill=tk.X, **pad)
-        ttk.Label(gq, text="Apply known force. Tare (0 N = ADC 50) is hardcoded.").pack(anchor="w")
+        ttk.Label(gq, text="Apply known force. Tare (0 N = ADC 36) is hardcoded.").pack(anchor="w")
         rq = ttk.Frame(gq); rq.pack(anchor="w", pady=(4, 0))
         ttk.Label(rq, text="Force (N):").pack(side=tk.LEFT)
         self._sq_force = ttk.Entry(rq, width=8); self._sq_force.insert(0, "251"); self._sq_force.pack(side=tk.LEFT, padx=4)
@@ -905,7 +905,7 @@ class LoadCellCalTab(_MCUTab):
         except ValueError:
             messagebox.showwarning("Input Error", "Enter a valid force value (N)."); return
         if f < 0:
-            messagebox.showwarning("Input Error", "Force must be ≥ 0 N."); return
+            messagebox.showwarning("Input Error", "Force must be = 0 N."); return
         self.send(f"CALLOAD1 {f:.1f}")
         self._p1_status.config(text="Capturing…", foreground="orange")
         self._adc1_lbl.config(text="—")
@@ -919,7 +919,7 @@ class LoadCellCalTab(_MCUTab):
         except ValueError:
             messagebox.showwarning("Input Error", "Enter a valid force value (N)."); return
         if f < 0:
-            messagebox.showwarning("Input Error", "Force must be ≥ 0 N."); return
+            messagebox.showwarning("Input Error", "Force must be = 0 N."); return
         self.send(f"CALLOAD2 {f:.1f}")
         self._p2_status.config(text="Capturing & computing…", foreground="orange")
         self._adc2_lbl.config(text="—")
@@ -935,13 +935,13 @@ class LoadCellCalTab(_MCUTab):
         self.send(f"CALLOAD_SINGLE {f:.1f}")
         self._sq_status.config(text="Capturing…", foreground="orange")
         self._sq_adc.config(text="—")
-        _append_log(self._log, f"[{_ts()}] Sent CALLOAD_SINGLE {f:.1f} N (tare=50)\n")
+        _append_log(self._log, f"[{_ts()}] Sent CALLOAD_SINGLE {f:.1f} N (tare=36)\n")
 
     def handle_line(self, line: str):
         if line.startswith("CALLOAD1:OK"):
             adc = _parse_field(line, "ADC"); f = _parse_field(line, "F")
             self._adc1_lbl.config(text=adc)
-            self._p1_status.config(text="Point 1 captured ✓", foreground="green")
+            self._p1_status.config(text="Point 1 captured ?", foreground="green")
             self._cap2_btn.config(state="normal")
             _append_log(self._log, f"[{_ts()}] Pt1: F={f} N, ADC={adc}\n")
         elif line.startswith("CALLOAD2:OK"):
@@ -949,13 +949,13 @@ class LoadCellCalTab(_MCUTab):
             tare = _parse_field(line, "TARE"); apn = _parse_field(line, "APN")
             self._adc2_lbl.config(text=adc)
             self._tare_lbl.config(text=tare); self._apn_lbl.config(text=apn)
-            self._p2_status.config(text="Calibration saved to EEPROM ✓", foreground="green")
+            self._p2_status.config(text="Calibration saved to EEPROM ?", foreground="green")
             self._cap2_btn.config(state="disabled")
-            _append_log(self._log, f"[{_ts()}] Pt2: F={f} N, ADC={adc} → TARE={tare}, APN={apn}\n")
+            _append_log(self._log, f"[{_ts()}] Pt2: F={f} N, ADC={adc} ? TARE={tare}, APN={apn}\n")
         elif line.startswith("CALLOAD_SINGLE:OK"):
             adc = _parse_field(line, "ADC"); apn = _parse_field(line, "APN")
             self._sq_adc.config(text=adc)
-            self._sq_status.config(text=f"Applied: TARE=50, APN={apn} ✓", foreground="green")
+            self._sq_status.config(text=f"Applied: TARE=50, APN={apn} ?", foreground="green")
             _append_log(self._log, f"[{_ts()}] Single cal: ADC={adc}, TARE=50, APN={apn}\n")
         elif line.startswith("ERR:CALLOAD_ORDER"):
             self._p2_status.config(text="Error: capture Pt1 first, or F2 must be > F1", foreground="red")
@@ -1086,7 +1086,7 @@ class PIDTuningTab(_MCUTab):
         except ValueError:
             messagebox.showwarning("Input Error", "Enter valid numeric values for Kp, Ki, Kd."); return
         if any(v < 0 for v in (kp, ki, kd)):
-            messagebox.showwarning("Input Error", "All gains must be ≥ 0."); return
+            messagebox.showwarning("Input Error", "All gains must be = 0."); return
         self.send(f"SET_PID KP:{kp} KI:{ki} KD:{kd}")
         self._apply_status.config(text="Sending…", foreground="orange")
 
@@ -1140,14 +1140,14 @@ class PIDTuningTab(_MCUTab):
             self._kp_lbl.config(text=_parse_field(line, "KP"))
             self._ki_lbl.config(text=_parse_field(line, "KI"))
             self._kd_lbl.config(text=_parse_field(line, "KD"))
-            self._apply_status.config(text="Applied ✓", foreground="green")
+            self._apply_status.config(text="Applied ?", foreground="green")
         elif line.startswith("ERR:SET_PID:RANGE"):
             self._apply_status.config(text="Value out of range", foreground="red")
         elif line.startswith("LOOPFREQ:OK:"):
             hz = _parse_field(line, "OK").replace("Hz", "")
             ms = _parse_field(line, "PERIOD").replace("ms", "")
             self._freq_lbl.config(text=f"{hz} Hz (period: {ms} ms)")
-            self._freq_status.config(text="Applied ✓", foreground="green")
+            self._freq_status.config(text="Applied ?", foreground="green")
         elif line.startswith("ERR:SET_LOOPFREQ:RANGE"):
             self._freq_status.config(text="1–200 Hz only", foreground="red")
         elif line == "SPDSTREAM:ON":
@@ -1218,7 +1218,7 @@ class DiagnosticsTab(_MCUTab):
     def _build(self):
         pad = {"padx": 8, "pady": 4}
 
-        ttk.Label(self, text="⚠  Not for normal operation – commissioning and fault-finding only.",
+        ttk.Label(self, text="?  Not for normal operation – commissioning and fault-finding only.",
                   foreground="darkorange", font=_F()["small_bold"]).pack(anchor="w", padx=8, pady=(8, 4))
 
         # 1. UART
@@ -1313,7 +1313,7 @@ class DiagnosticsTab(_MCUTab):
                                 font=_F()["mono"])
         self._raw_log.pack(fill=tk.BOTH, expand=True)
 
-    # ── Commands ──────────────────────────────────────────────────────────────
+    # -- Commands --------------------------------------------------------------
 
     def _cancel_timer(self, attr: str):
         aid = getattr(self, attr)
@@ -1410,7 +1410,7 @@ class DiagnosticsTab(_MCUTab):
         else:
             self._run_all_active = False
 
-    # ── Response handling ─────────────────────────────────────────────────────
+    # -- Response handling -----------------------------------------------------
 
     def handle_line(self, line: str):
         # Always append to raw log
@@ -1419,7 +1419,7 @@ class DiagnosticsTab(_MCUTab):
         if line == "PONG":
             self._cancel_timer("_ping_after")
             self._ping_ind.config(fg="green")
-            self._ping_status.config(text="Connected ✓", foreground="green")
+            self._ping_status.config(text="Connected ?", foreground="green")
             # Unlock subsequent diag buttons
             for btn in (self._as5600_btn, self._eeprom_btn, self._read_cal_btn, self._run_all_btn):
                 btn.config(state="normal")
@@ -1433,7 +1433,7 @@ class DiagnosticsTab(_MCUTab):
             status = _parse_field(line, "STATUS")
             self._as_status.config(text=status)
             if md == "1" and ml == "0" and mh == "0":
-                self._mag_ind.config(fg="green"); self._mag_status.config(text="Detected ✓", foreground="green")
+                self._mag_ind.config(fg="green"); self._mag_status.config(text="Detected ?", foreground="green")
             elif ml == "1":
                 self._mag_ind.config(fg="orange"); self._mag_status.config(text="Too weak", foreground="orange")
             elif mh == "1":
@@ -1442,7 +1442,7 @@ class DiagnosticsTab(_MCUTab):
                 self._mag_ind.config(fg="red"); self._mag_status.config(text="Not found", foreground="red")
             try:
                 agc_v = int(agc)
-                self._agc_lbl.config(text=f"{agc_v} ⚠ check magnet dist." if agc_v > 200 else str(agc_v),
+                self._agc_lbl.config(text=f"{agc_v} ? check magnet dist." if agc_v > 200 else str(agc_v),
                                      foreground="orange" if agc_v > 200 else "black")
             except ValueError:
                 self._agc_lbl.config(text=agc)
@@ -1465,7 +1465,7 @@ class DiagnosticsTab(_MCUTab):
 
         elif line.startswith("TEST_EEPROM:OK"):
             self._cancel_timer("_eeprom_after")
-            self._ee_ind.config(fg="green"); self._ee_status.config(text="PASS ✓", foreground="green")
+            self._ee_ind.config(fg="green"); self._ee_status.config(text="PASS ?", foreground="green")
             if self._run_all_active:
                 self._run_all_next()
 
@@ -1477,11 +1477,11 @@ class DiagnosticsTab(_MCUTab):
 
         elif line.startswith("CAL:"):
             cpm = _parse_field(line, "CPM"); tare = _parse_field(line, "TARE"); apn = _parse_field(line, "APN")
-            self._cal_cpm.config(text=cpm if cpm != "0" else f"{cpm} ⚠ not calibrated – run CALSPD",
+            self._cal_cpm.config(text=cpm if cpm != "0" else f"{cpm} ? not calibrated – run CALSPD",
                                  foreground="orange" if cpm == "0" else "black")
             self._cal_tare.config(text=tare)
-            default_apn = apn in ("4.18", "4.1800")
-            self._cal_apn.config(text=apn if not default_apn else f"{apn} ⚠ default – run CALLOAD",
+            default_apn = apn in ("2.8", "2.8000")
+            self._cal_apn.config(text=apn if not default_apn else f"{apn} ? default – run CALLOAD",
                                  foreground="orange" if default_apn else "black")
             if self._run_all_active:
                 self._run_all_active = False  # last step

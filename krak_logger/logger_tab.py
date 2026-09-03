@@ -35,6 +35,12 @@ from .storage import create_minio_client, update_search_index_on_server
 CLIP_THRESHOLD = 0.99
 CLIP_MIN_RUN = 4   # consecutive saturated samples required to count as clipping
 
+# The STWIN firmware mutes the first ~50 ms after the USB stream opens
+# (click suppression in AMicArray audio_application.c).  No samples may be
+# kept until this window has certainly passed, otherwise the recording
+# starts with digital silence and AI04 onsets appear shifted vs AI0-AI3.
+STWIN_WARMUP_S = 0.15
+
 
 class LoggerTab:
     """The KRAK Logger notebook tab.
@@ -521,6 +527,10 @@ class LoggerTab:
                     # Start early so hardware is warm before LAN-XI is ready.
                     # The gate keeps the buffer closed until on_ready fires.
                     stwin_stream.start()
+                    # LAN-XI can become ready within milliseconds; block here so
+                    # the firmware's USB-open mute window (and the click it
+                    # suppresses) always falls in the discarded warm-up.
+                    time.sleep(STWIN_WARMUP_S)
                 except Exception as stwin_err:
                     messagebox.showwarning("STWINMA2 Error",
                                            f"Failed to open STWINMA2 stream:\n{stwin_err}\n"
@@ -621,20 +631,23 @@ class LoggerTab:
                 _so_raw_path = os.path.join(TEMP_DIR, f"_stwin_only_{int(time.time()*1000)}.raw")
                 so_buf = DiskBuffer(_so_raw_path, dtype=np.float32)
 
-                so_skip = [3]  # discard first 3 blocks (~32 ms) to skip hardware init transient
+                # Keep-gate instead of dropping blocks: warm the stream up past
+                # the firmware mute window and init transient, then open the
+                # gate together with the load cell so AI04 t=0 == LC t=0.
+                so_keep = threading.Event()
 
                 def _stwin_only_cb(indata, fc, ti, status):
                     if status:
                         print(f"STWINMA2: {status}")
-                    if so_skip[0] > 0:
-                        so_skip[0] -= 1
-                        return
-                    so_buf.push(indata[:, 0].copy())
+                    if so_keep.is_set():
+                        so_buf.push(indata[:, 0].copy())
 
                 try:
                     with sd.InputStream(device=stwin_idx_only, samplerate=STWINMA2_SAMPLE_RATE,
                                         channels=1, dtype='float32', blocksize=STWINMA2_BLOCK_SIZE,
                                         callback=_stwin_only_cb):
+                        time.sleep(STWIN_WARMUP_S)
+                        so_keep.set()
                         lc_collector = self._lc_collector_if_enabled(lc_duration)
                         if on_daq_ready is not None:
                             on_daq_ready()
