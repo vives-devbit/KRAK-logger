@@ -5,7 +5,7 @@ import sounddevice as sd
 # Substrings identifying the STWINMA2 USB audio device in device names.
 STWIN_KEYWORDS = ('stwin', 'steval', 'stm32')
 
-LANXI_SOURCE = "LAN-XI"
+CN0582_SOURCE = "CN0582 (256 kHz)"
 STWINMA2_SOURCE = "STWINMA2 Ch0 (192 kHz)"
 STWIN_AUTO_DETECT = "Auto-detect"
 
@@ -26,12 +26,12 @@ def build_device_choices():
 
     Returns (device_map, source_choices, stwin_choices):
         device_map     -- display name -> sd device index;
-                          LANXI_SOURCE -> None, STWINMA2_SOURCE -> "__stwinma2__"
+                          CN0582_SOURCE -> None, STWINMA2_SOURCE -> "__stwinma2__"
         source_choices -- entries for the main audio-source combobox (all
                           STWINMA2 host-API duplicates excluded)
         stwin_choices  -- entries for the STWINMA2 device combobox
     """
-    device_map = {LANXI_SOURCE: None, STWINMA2_SOURCE: "__stwinma2__"}
+    device_map = {CN0582_SOURCE: None, STWINMA2_SOURCE: "__stwinma2__"}
 
     # Identify all STWINMA2 device indices (MME + WASAPI instances of the same
     # physical device) so every duplicate is excluded from the generic dropdown.
@@ -44,7 +44,7 @@ def build_device_choices():
     except Exception:
         pass
 
-    source_choices = [LANXI_SOURCE, STWINMA2_SOURCE]
+    source_choices = [CN0582_SOURCE, STWINMA2_SOURCE]
     stwin_choices = [STWIN_AUTO_DETECT]
     for idx, name in list_audio_input_devices():
         key = f"{name} [{idx}]"

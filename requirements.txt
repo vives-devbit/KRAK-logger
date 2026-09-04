@@ -34,3 +34,7 @@ setuptools==72.1.0
 # Note: The following are Python standard library modules and don't need to be listed:
 # tkinter, threading, datetime, os, io, subprocess, socket, asyncio, re, enum,
 # itertools, sys, struct, warnings
+
+# EVAL-CN0582-USBZ DAQ (HelpFunctions/cn0582.py)
+libusb1>=3.1          # async bulk streaming, required for gapless capture
+pyusb>=1.2            # control-only fallback

@@ -1,14 +1,14 @@
 """Mel Spectrogram tab."""
 
-import os
 import tkinter as tk
 from tkinter import ttk
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.io.wavfile as wav
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.signal import butter, sosfilt
+
+from .config import STWINMA2_SAMPLE_RATE
 
 
 def compute_mel_spectrogram(signal, sr, n_mels=128, f_max=None):
@@ -96,35 +96,30 @@ def build_mel_tab(notebook, root_win, logger):
         n_mels = max(32, min(256, n_mels_var.get()))
 
         recorded_data = logger.recorded_data
-        wav_file = logger.output_wav_file
 
         # --- Gather signal ---
         sig, sr = None, None
         if ch == "AI0":
-            if not wav_file or not os.path.exists(wav_file):
-                status_var.set("No WAV file found."); return
-            sr, raw = wav.read(wav_file)
-            sig = raw.astype(np.float32)
-            if sig.ndim > 1:
-                sig = sig[:, 0]
+            if recorded_data is None or len(recorded_data) == 0:
+                status_var.set("No AI0 data."); return
+            sig = np.asarray(recorded_data[0], dtype=np.float32)
+            sr  = logger.source_sample_rate()
         elif ch == "AI2":
             if recorded_data is None or len(recorded_data) <= 2:
                 status_var.set("No AI2 data."); return
             sig = (recorded_data[2] / 10.0).astype(np.float32)
-            sr  = logger.lanxi_sample_rate
+            sr  = logger.daq_sample_rate
         elif ch == "AI04":
-            stwin_wav = wav_file.replace('.wav', '_stwinma2.wav') if wav_file else ""
-            if not stwin_wav or not os.path.exists(stwin_wav):
-                status_var.set("No STWINMA2 WAV found. Record with source 'STWINMA2 Ch0 (192 kHz)' or enable 'Also record STWINMA2 Ch0'."); return
-            sr, raw = wav.read(stwin_wav)
-            sig = raw.astype(np.float32)
-            if sig.ndim > 1:
-                sig = sig[:, 0]
+            stwin = logger.stwinma2_signal()
+            if stwin is None:
+                status_var.set("No STWINMA2 data. Record with source 'STWINMA2 Ch0 (192 kHz)' or enable 'Also record STWINMA2 Ch0'."); return
+            sig = np.asarray(stwin, dtype=np.float32)
+            sr  = STWINMA2_SAMPLE_RATE
         else:
             if recorded_data is None or len(recorded_data) <= 3:
                 status_var.set("No AI3 data."); return
             sig = recorded_data[3].astype(np.float32)
-            sr  = logger.lanxi_sample_rate
+            sr  = logger.daq_sample_rate
 
         # --- Optional high-pass ---
         if use_hp:

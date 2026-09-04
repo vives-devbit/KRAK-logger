@@ -10,8 +10,9 @@ import sounddevice as sd
 from mcu_protocol import MCUProtocol
 from mcu_tabs import MCUController, scale_fonts
 
-from .config import load_env
-from .lanxi_daq import init_lanxi
+from .cn0582_daq import init_cn0582
+from .config import TEMP_DIR, ensure_temp_dir, load_env
+from .cn0582_settings_tab import CN0582SettingsTab
 from .logger_tab import LoggerTab
 from .mel_tab import build_mel_tab
 from .sp_tabs import build_signal_processing_tabs
@@ -19,10 +20,12 @@ from .sp_tabs import build_signal_processing_tabs
 
 def main():
     load_env()
-    lanxi, lanxi_sample_rate, lanxi_available = init_lanxi()
+    ensure_temp_dir()
+    daq, daq_sample_rate, daq_available = init_cn0582(TEMP_DIR)
 
     root = tk.Tk()
-    root.title("KRAK Suite – LAN-XI Recorder + MCU Controller")
+    root.withdraw()
+    root.title("KRAK Suite – CN0582 Recorder + MCU Controller")
     scale_fonts(15)  # set readable default; user can adjust via the Font spinbox
 
     # -- MCU Serial Connection bar (always visible, above tabs) --------------
@@ -108,8 +111,9 @@ def main():
     shared_duration_var = tk.StringVar(value="15")
 
     logger = LoggerTab(root, krak_frame, mcu_protocol,
-                       lanxi, lanxi_sample_rate, lanxi_available,
+                       daq, daq_sample_rate, daq_available,
                        shared_duration_var)
+    settings_tab = CN0582SettingsTab(notebook, root, daq, daq_available)
 
     # MCU tabs -- created now so they exist before any connect attempt
     mcu_ctrl = MCUController(notebook, root, mcu_protocol,
@@ -124,7 +128,7 @@ def main():
     _hidden_tab_data   = []   # list of (position, child_widget, {options})
 
     def _toggle_extra_tabs(event=None):
-        _always_visible = {krak_frame, mcu_ctrl.measurement, mcu_ctrl.position, mel_tab}
+        _always_visible = {krak_frame, settings_tab.frame, mcu_ctrl.measurement, mcu_ctrl.position, mel_tab}
         if not _extra_tabs_hidden[0]:
             # Collect and hide every tab except the always-visible set
             _hidden_tab_data.clear()
@@ -153,6 +157,11 @@ def main():
     root.bind('<Control-h>', _toggle_extra_tabs)
     _toggle_extra_tabs()   # start with extra tabs hidden
 
+    if daq_available and daq is not None:
+        settings_tab.run_startup_auto_bias_now()
+
+    root.deiconify()
+
     # -- Clean shutdown ---------------------------------------------------------
     def on_closing():
         # Disconnect MCU serial
@@ -170,12 +179,12 @@ def main():
             print(f"Error stopping audio: {e}")
 
         try:
-            # Close LAN-XI stream
-            if lanxi is not None:
-                lanxi.close_stream()
-            print("LAN-XI stream closed")
+            # Close the CN0582 USB stream
+            if daq is not None:
+                daq.close_stream()
+            print("CN0582 stream closed")
         except Exception as e:
-            print(f"Error closing LAN-XI stream: {e}")
+            print(f"Error closing CN0582 stream: {e}")
 
         try:
             # Stop signal-processing worker threads, then matplotlib figures

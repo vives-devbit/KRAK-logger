@@ -2,7 +2,8 @@
 
 Modules:
     config        -- paths, environment loading, shared constants
-    lanxi_daq     -- LAN-XI DAQ initialisation
+    cn0582_daq    -- CN0582 DAQ initialisation and acquisition adapter
+    cn0582_settings_tab -- CN0582 live configuration notebook page
     loadcell      -- MCU load-cell streaming (LC_LOGGING protocol)
     disk_buffer   -- disk-backed audio buffer for high-rate capture
     audio_devices -- sounddevice enumeration / STWINMA2 detection

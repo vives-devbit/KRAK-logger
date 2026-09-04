@@ -1,0 +1,45 @@
+{
+  "gains": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "coupling": [
+    1,
+    0,
+    1,
+    1
+  ],
+  "bias_mv": [
+    2189.0,
+    4000.0,
+    2182.0,
+    2213.0
+  ],
+  "current_source": [
+    true,
+    false,
+    true,
+    true
+  ],
+  "invert": [
+    false,
+    false,
+    false,
+    false
+  ],
+  "store_rate_hz": [
+    0,
+    32000,
+    0,
+    0
+  ],
+  "auto_bias_on_startup": [
+    true,
+    false,
+    true,
+    true
+  ],
+  "ma_420": false
+}

@@ -20,6 +20,7 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 FEATURE_EXTRACTION_DIR = os.path.join(SCRIPT_DIR, "feature_extraction")
 
 TEMP_DIR = "temp_files"
+CN0582_SETTINGS_FILE = os.path.join(SCRIPT_DIR, "cn0582_settings.json")
 
 # ---------------------------------------------------------------------------
 # Recording constants
@@ -28,10 +29,33 @@ DEFAULT_DURATION = 15.0           # seconds
 BUCKET_NAME = "krak"
 INDEX_FILE_NAME = "search_index.json"
 FOCUSRITE_SAMPLE_RATE = 48000
-LANXI_FALLBACK_SAMPLE_RATE = 51200
 STWINMA2_SAMPLE_RATE = 192_000
 STWINMA2_BLOCK_SIZE = 2048
-LANXI_CHUNK_DURATION = 2.0        # seconds per LAN-XI chunk in manual-stop mode
+
+# ---------------------------------------------------------------------------
+# CN0582 (EVAL-CN0582-USBZ, AD7768-4)
+# ---------------------------------------------------------------------------
+# Fixed by the board: 256 kSPS on four simultaneous 24-bit channels.
+CN0582_SAMPLE_RATE = 256_000
+# Longest fixed-duration clip the driver accepts; beyond this the logger uses
+# manual-stop mode, which streams gaplessly until stopped.
+CN0582_MAX_CLIP_S = 15.0
+# 8.192 MB/s on the wire, and ~1 GB of RAM per captured minute once decoded to
+# float64 -- warn before a manual-stop recording runs past this.
+CN0582_LONG_RECORD_WARN_S = 60.0
+# Front-end defaults, overridable per deployment via .env (see cn0582_daq).
+CN0582_DEFAULT_GAINS = (1, 1, 1, 1)      # LTC6910 codes: 1 2 5 10 20 50 100
+CN0582_DEFAULT_COUPLING = (1, 1, 1, 1)   # 1 = AC-coupled
+# Current-source bit mapping: GUI channel index -> device bit index.
+# CN0582 command bytes use bit0=CH0 .. bit3=CH3.
+CN0582_CURRENT_SOURCE_BIT_FOR_CHANNEL = (0, 1, 2, 3)
+CN0582_DEFAULT_IEPE_MASK = 0x01          # CH0 mic power on by default; others off
+# AI1 carries the load cell, which changes far too slowly to be worth 256 kSPS on
+# disk. It is the ONLY channel that may be stored at a reduced rate -- the others
+# are audio and must keep every sample. Change this if the load cell is rewired.
+CN0582_LOADCELL_CHANNEL = 1
+# Rate the load-cell channel is stored at by default.
+CN0582_LOADCELL_STORE_RATE = 32000
 
 
 def find_env_file():
