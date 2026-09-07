@@ -16,7 +16,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.signal import butter, decimate, sosfilt
 
 from . import audio_devices
-from .audio_devices import CN0582_SOURCE, STWIN_AUTO_DETECT, STWINMA2_SOURCE
+from .audio_devices import CN0582_SOURCE, STWIN_AUTO_DETECT, STWINMA2_SOURCE, open_stwinma2_stream
+from .external_link import check_nexygenplus_ready, trigger_nexygenplus_start
 from .config import (
     BUCKET_NAME,
     CN0582_LONG_RECORD_WARN_S,
@@ -240,10 +241,6 @@ class LoggerTab:
         if self.stwinma2_device_var.get() not in stwin_choices:
             self.stwinma2_device_var.set(STWIN_AUTO_DETECT)
 
-    def _find_stwinma2_device(self):
-        return audio_devices.find_stwinma2_device(
-            self.stwinma2_device_var.get(), self._audio_device_map)
-
     # ------------------------------------------------------------------
     # Excel metadata
     # ------------------------------------------------------------------
@@ -438,6 +435,26 @@ class LoggerTab:
     def start_recording(self):
         if self.recording:
             return
+        # Everything that can say no runs before anything irreversible happens:
+        # pressing NexygenPlus's Start button physically starts a test, so it is
+        # the last step, never the one that discovers a problem. A KRAK
+        # recording and its NexygenPlus test are only useful as a pair, so
+        # either both start or neither does.
+        source = self.audio_source_var.get()
+        need_stwin = (source == STWINMA2_SOURCE
+                      or (self.stwinma2_enable_var.get() and source != STWINMA2_SOURCE))
+        if need_stwin and not self._stwinma2_available_at_192k():
+            return  # error already shown; nothing started, NexygenPlus untouched
+
+        ready, detail = check_nexygenplus_ready()
+        if not ready:
+            print(f"NexygenPlus: {detail}")
+            messagebox.showerror(
+                "NexygenPlus Not Ready",
+                f"The NexygenPlus test could not be started:\n\n{detail}\n\n"
+                "Recording was not started.")
+            return
+
         if self.manual_stop_var.get():
             if (self.audio_source_var.get() == CN0582_SOURCE
                     and not self._long_record_warned):
@@ -451,10 +468,58 @@ class LoggerTab:
                         "Continue?"):
                     return
                 self._long_record_warned = True
+
+        # Point of no return: the test is now running.
+        if not self._trigger_nexygenplus():
+            messagebox.showerror(
+                "NexygenPlus Did Not Start",
+                "The NexygenPlus Start button could not be pressed (see console).\n\n"
+                "Recording was not started.")
+            return
+
+        if self.manual_stop_var.get():
             self.stop_indefinite.clear()
             self.record_button.config(text="⏹  Stop", bg="red", fg="white",
                                       command=self._stop_manual_recording)
         threading.Thread(target=self.record_data, daemon=True).start()
+
+    def _stwinma2_available_at_192k(self):
+        """Verify AI04 can actually be opened at 192 kHz right now, without
+        holding the device open -- AI04 is only ever valid at 192 kHz, so this
+        gates the whole recording (and the NexygenPlus test) rather than
+        letting record_data() discover the failure after the fact.
+        """
+        try:
+            probe = open_stwinma2_stream(
+                self.stwinma2_device_var.get(), self._audio_device_map,
+                callback=lambda *a: None, block_size=STWINMA2_BLOCK_SIZE,
+                required_rate=STWINMA2_SAMPLE_RATE)
+        except Exception as e:
+            messagebox.showerror(
+                "STWINMA2 Not Available",
+                f"AI04 (STWINMA2) could not be opened at {STWINMA2_SAMPLE_RATE} Hz:\n\n{e}\n\n"
+                "Recording was not started.")
+            return False
+        try:
+            probe.stop()
+            probe.close()
+        except Exception:
+            pass
+        return True
+
+    def _trigger_nexygenplus(self):
+        """Press NexygenPlus 4.1's Start button so its test runs alongside us.
+
+        Never raises and never blocks: a missing or busy NexygenPlus must not
+        stop a KRAK recording that is otherwise good to go.
+        """
+        try:
+            ok, detail = trigger_nexygenplus_start()
+            print(f"NexygenPlus: {detail}")
+            return ok
+        except Exception as e:
+            print(f"NexygenPlus: Start trigger failed: {e}")
+            return False
 
     def _stop_manual_recording(self):
         self.stop_indefinite.set()
@@ -545,37 +610,33 @@ class LoggerTab:
                 stwin_buf.push(indata[:, 0].copy())
 
         if stwin_enabled:
-            _sidx = self._find_stwinma2_device()
-            if _sidx is None:
-                messagebox.showwarning("STWINMA2 Not Found",
-                                       "Could not find a USB audio input (STWINMA2). "
-                                       "Recording without STWINMA2.")
-                stwin_enabled = False
-            else:
-                try:
-                    _stwin_raw_path = os.path.join(TEMP_DIR, f"_stwin_{int(time.time()*1000)}.raw")
-                    stwin_buf    = DiskBuffer(_stwin_raw_path, dtype=np.float32)
-                    stwin_stream = sd.InputStream(
-                        device=_sidx, samplerate=STWINMA2_SAMPLE_RATE,
-                        channels=1, dtype='float32', blocksize=STWINMA2_BLOCK_SIZE,
-                        callback=_stwin_callback,
-                    )
-                    # Start early so hardware is warm before the DAQ is ready.
-                    # The gate keeps the buffer closed until on_ready fires.
-                    stwin_stream.start()
-                    # The DAQ can become ready within milliseconds; block here so
-                    # the firmware's USB-open mute window (and the click it
-                    # suppresses) always falls in the discarded warm-up.
-                    time.sleep(STWIN_WARMUP_S)
-                except Exception as stwin_err:
-                    messagebox.showwarning("STWINMA2 Error",
-                                           f"Failed to open STWINMA2 stream:\n{stwin_err}\n"
-                                           "Recording without STWINMA2.")
-                    stwin_enabled = False
-                    stwin_stream  = None
-                    if stwin_buf is not None:
-                        stwin_buf.discard()
-                        stwin_buf = None
+            # start_recording()'s preflight already confirmed AI04 opens at
+            # 192 kHz before NexygenPlus was triggered; this is the real open,
+            # done fresh rather than reusing the probe stream. AI04 is only
+            # ever valid at 192 kHz -- a failure here (e.g. a device dropped
+            # out between the preflight and now) aborts the whole recording
+            # rather than silently continuing without it.
+            try:
+                _stwin_raw_path = os.path.join(TEMP_DIR, f"_stwin_{int(time.time()*1000)}.raw")
+                stwin_buf    = DiskBuffer(_stwin_raw_path, dtype=np.float32)
+                stwin_stream = open_stwinma2_stream(
+                    self.stwinma2_device_var.get(), self._audio_device_map,
+                    callback=_stwin_callback, block_size=STWINMA2_BLOCK_SIZE,
+                    required_rate=STWINMA2_SAMPLE_RATE)
+                # The DAQ can become ready within milliseconds; block here so
+                # the firmware's USB-open mute window (and the click it
+                # suppresses) always falls in the discarded warm-up.
+                time.sleep(STWIN_WARMUP_S)
+            except Exception as stwin_err:
+                if stwin_buf is not None:
+                    stwin_buf.discard()
+                    stwin_buf = None
+                self.recording = False
+                messagebox.showerror(
+                    "STWINMA2 Not Available",
+                    f"AI04 (STWINMA2) could not be opened at {STWINMA2_SAMPLE_RATE} Hz:\n\n"
+                    f"{stwin_err}\n\nRecording was not started.")
+                return
 
         time_axis = None
         data      = None
@@ -618,14 +679,6 @@ class LoggerTab:
 
             # -- STWINMA2-only -------------------------------------------------------
             elif source == STWINMA2_SOURCE:
-                stwin_idx_only = self._find_stwinma2_device()
-                if stwin_idx_only is None:
-                    self.recording = False
-                    messagebox.showerror("STWINMA2 Not Found",
-                                         "Could not find a USB audio input (STWINMA2).\n"
-                                         "Check connection and click Refresh.")
-                    return
-
                 _so_raw_path = os.path.join(TEMP_DIR, f"_stwin_only_{int(time.time()*1000)}.raw")
                 so_buf = DiskBuffer(_so_raw_path, dtype=np.float32)
 
@@ -640,10 +693,25 @@ class LoggerTab:
                     if so_keep.is_set():
                         so_buf.push(indata[:, 0].copy())
 
+                # start_recording()'s preflight already confirmed AI04 opens at
+                # 192 kHz; a failure here (device dropped out since) aborts
+                # cleanly -- AI04 is never valid at anything but 192 kHz.
                 try:
-                    with sd.InputStream(device=stwin_idx_only, samplerate=STWINMA2_SAMPLE_RATE,
-                                        channels=1, dtype='float32', blocksize=STWINMA2_BLOCK_SIZE,
-                                        callback=_stwin_only_cb):
+                    stwin_only_stream = open_stwinma2_stream(
+                        self.stwinma2_device_var.get(), self._audio_device_map,
+                        callback=_stwin_only_cb, block_size=STWINMA2_BLOCK_SIZE,
+                        required_rate=STWINMA2_SAMPLE_RATE)
+                except Exception as e:
+                    so_buf.discard()
+                    self.recording = False
+                    messagebox.showerror(
+                        "STWINMA2 Not Available",
+                        f"AI04 (STWINMA2) could not be opened at {STWINMA2_SAMPLE_RATE} Hz:\n\n"
+                        f"{e}\n\nRecording was not started.")
+                    return
+
+                try:
+                    try:
                         time.sleep(STWIN_WARMUP_S)
                         so_keep.set()
                         lc_collector = self._lc_collector_if_enabled(lc_duration)
@@ -655,6 +723,12 @@ class LoggerTab:
                             n_expected = int(STWINMA2_SAMPLE_RATE * self.duration)
                             while so_buf.sample_count < n_expected:
                                 time.sleep(0.05)
+                    finally:
+                        try:
+                            stwin_only_stream.stop()
+                            stwin_only_stream.close()
+                        except Exception:
+                            pass
 
                     so_buf.finish()
                     raw = so_buf.read_float()

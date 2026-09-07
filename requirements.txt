@@ -38,3 +38,7 @@ setuptools==72.1.0
 # EVAL-CN0582-USBZ DAQ (HelpFunctions/cn0582.py)
 libusb1>=3.1          # async bulk streaming, required for gapless capture
 pyusb>=1.2            # control-only fallback
+
+# Windows UI automation (krak_logger/external_link.py) - couples Start Recording
+# to NexygenPlus 4.1's F5 hotkey since it has no scriptable API
+pywin32>=306

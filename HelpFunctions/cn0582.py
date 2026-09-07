@@ -280,6 +280,12 @@ class CN0582:
         return r
 
     def close(self):
+        # idempotent: app.py's on_closing() and the atexit/SIGINT handlers
+        # registered in cn0582_daq.py can all reach this, and a second call on an
+        # already-released handle segfaults deep in libusb (access violation on a
+        # freed struct) rather than raising a catchable Python exception
+        if self._h is None and self._pyusb is None:
+            return
         try:                                # never leave a stream running
             self.resync()
         except Exception:
@@ -290,6 +296,9 @@ class CN0582:
             finally:
                 self._h.close()
                 self._ctx.close()
+                self._h = None
+                self._ctx = None
+        self._pyusb = None
 
     def __enter__(self):
         return self

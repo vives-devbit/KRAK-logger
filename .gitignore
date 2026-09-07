@@ -193,3 +193,6 @@ dist/KRAK_Logger_Distribution/
 
 # Disk-buffer temp files from STWINMA2 streaming
 temp_files/*.raw
+# Raw CN0582 captures, normally deleted after decode -- one is left behind
+# whenever a recording dies between capture and decode
+temp_files/*.bin
