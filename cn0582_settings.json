@@ -2,26 +2,26 @@
   "gains": [
     1,
     1,
-    1,
-    1
+    20,
+    20
   ],
   "coupling": [
     1,
     0,
     1,
-    0
+    1
   ],
   "bias_mv": [
-    2165.0,
+    2189.0,
     4400.0,
-    2186.0,
-    2213.0
+    2203.0,
+    2220.0
   ],
   "current_source": [
     true,
     false,
     true,
-    false
+    true
   ],
   "invert": [
     false,
@@ -39,7 +39,7 @@
     true,
     false,
     true,
-    false
+    true
   ],
   "ma_420": false
 }

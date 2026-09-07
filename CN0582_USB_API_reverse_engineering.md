@@ -4,8 +4,83 @@ Reverse-engineering the USB command protocol of the "Analog Devices USB3-SPI" br
 (Cypress/Infineon EZ-USB **FX3**) on the EVAL-CN0582-USBZ, to drive the board from
 Python (pyusb / libusb).
 
-> Status: **in progress.** EP 0x81 sample stream fully decoded (§6) — data path is usable end to end. Living document — new captures appended.
-> Confirmed = verified across ≥2 observations or decoded cleanly. Hypothesis = plausible, unverified.
+> Status: **working.** EP 0x81 sample stream fully decoded (§6); all control commands
+> needed for acquisition are verified against hardware. Living document.
+>
+> **Confirmed** = reproduced on the board itself. **Decoded** = read from captures and
+> consistent, but not exercised on hardware. **Hypothesis** = plausible, unverified.
+> Section 0 lists the encodings where those three levels gave different answers - read it
+> before editing any command definition.
+
+---
+
+## 0. READ THIS BEFORE CHANGING ANY ENCODING IN THIS DOCUMENT
+
+Three command encodings in here were **decoded wrongly from the USB captures first,
+then corrected against hardware.** Each wrong reading is the one a careful person
+naturally arrives at from the capture files alone, and each cost hours of debugging
+a board that appeared to work intermittently.
+
+If you are about to "fix" one of these back, stop. The captures do not settle them.
+**Only the hardware does, and the test is written out for each one below.**
+
+| command | CORRECT | the wrong reading that keeps coming back |
+|---|---|---|
+| current source | `byte = (channel << 1) \| enable`, one channel per write | a bitmask, bit N = channel N |
+| PGA gain | one 12-bit word over `67 02` + `67 03`, 3 bits per channel, **all four channels in every write** | `0x49 + 9*ch + gain_index`, per channel |
+| DC bias channel select | AD5686R DAC **bitmask**: ch0 `0x31`, ch1 `0x32`, ch2 `0x34`, ch3 `0x38` | `0x31 + channel` |
+
+### Why the wrong readings survive contact with the captures
+
+Every one of them **reproduces the small captures exactly**. That is the trap.
+
+* **Current source.** For a single channel the mask value collides with the correct
+  per-channel code: mask `0x01` and "ch0 on" are both `0x01`. `Channel0_currentS_ON_OF.json`
+  (`01`, `00`) fits both readings perfectly. The startup sequence `01 -> 03 -> 02 -> 00`
+  also fits both, because the actions were Ch0 on, Ch1 on, **Ch1 off, Ch0 off** - not the
+  order originally written down.
+* **Gain.** `gain_CH0_2.json` writes `0x4a` and `CH0_gain5.json` writes `0x4b`, which the
+  arithmetic formula reproduces. It only breaks once a second channel is involved.
+* **DC bias.** `0x31 + channel` is correct for ch0 and ch1 by coincidence, because
+  `1 << 0 == 1` and `1 << 1 == 2`. It addresses the wrong DAC for ch2 and ch3.
+
+So "I checked it against the capture and it matches" is **not** evidence. All three wrong
+readings match the captures.
+
+### The evidence that actually disproves them
+
+* **Current source** - `CH3_current_ON_OFF toggling.json`: toggling ch3 four times gives
+  `07 06 07 06`. That moves **bit 0**, not bit 3. No bitmask can express "ch3 on" by
+  setting bit 0. It also explains the startup block's `00 02 04 06`, which is all four
+  sources being switched off one at a time, not a mysterious "different context".
+* **Gain** - `CH0_gain5` writes `0x4b`, then the very next capture in the same session,
+  `CH1_gain_2`, writes `0x53`. Under the packed-word reading that unpacks to *ch0 still at
+  gain 5*, ch1 now 2. Under the arithmetic formula the ch0 setting would have vanished.
+* **DC bias** - byte `0x33` moves **ch0 and ch1 together**. An index cannot do that; a
+  bitmask can. Confirmed by sweeping each mask bit and watching all four lanes.
+
+### How to re-verify on hardware, if you must
+
+Each takes about a minute with the board connected. Do not change the document without
+running the matching test.
+
+* **Current source** - DC-couple a channel with an IEPE sensor, then compare the bias
+  needed to centre it with the source off vs on. Measured on ch0: **1837 mV off,
+  9617 mV on**, a 7.78 V standing bias. Sending a mask instead produces *no change at all*,
+  because a mask like `0x0D` goes out as one byte meaning "channel 6 on".
+* **Gain** - set one channel's gain and read back both registers with `67 02 00 ff` and
+  `67 03 00 ff`. `get_gains()` must round-trip `[1, 2, 5, 10]`. Then set one channel at a
+  time and confirm the other three lanes stay at exactly 1.00x.
+* **DC bias** - step one mask bit at a time and watch all four lanes. `0x31/0x32/0x34/0x38`
+  must move exactly one lane each, and `0x3F` must move all four.
+
+### The symptom that means someone has reverted one of these
+
+A board that **works sometimes**. One channel behaves and another does not; a setting
+applies on its own but stops working once a second channel is enabled; a sensor reads
+only noise while the vendor GUI drives the same board correctly. Every one of these
+three bugs presents that way, because the wrong encoding is right for the simplest case
+and wrong for everything else.
 
 ---
 
@@ -72,6 +147,9 @@ IN  EP0x82: 69 50 <addr>  + <8-byte IEEE-754 big-endian double>   (11 bytes)
   during GUI launch (initial read, then again — likely on entering the main window).
 
 ### CMD-GAIN — Set per-channel PGA gain (LTC6910)   *(CORRECTED, hardware-verified)*
+> **Do not revert this from the captures - see section 0.** The earlier reading matches
+> the small capture files exactly and is still wrong. Re-verify on hardware or leave it.
+
 
 > **The `0x49 + 9*ch + gain_index` formula was wrong.** It reproduces ch0 correctly and
 > happens to match one Ch1 capture, but it is not a per-channel command at all - every
@@ -162,6 +240,9 @@ def set_coupling(ch: int, ac_coupled: bool):
 ```
 
 ### CMD-DCBIAS — Set per-channel sensor DC bias / level-shift (AD5686R)   *(CONFIRMED ON HARDWARE)*
+> **Do not revert this from the captures - see section 0.** The earlier reading matches
+> the small capture files exactly and is still wrong. Re-verify on hardware or leave it.
+
 
 > **Correction (hardware-verified).** The channel-select byte's low nibble is the
 > AD5686R **DAC channel bitmask**, not `0x31 + channel`. The old reading is correct for
@@ -291,6 +372,9 @@ The startup `"c1" "c3" "c5" "c7"` are the **coupling** command (see CMD-COUPLING
 digit = 2*ch+1 for ch 0..3 = all channels set to **DC coupling** at startup.
 
 ### CMD-CURRSRC - Set IEPE current source, PER CHANNEL   *(CORRECTED, hardware-verified)*
+> **Do not revert this from the captures - see section 0.** The earlier reading matches
+> the small capture files exactly and is still wrong. Re-verify on hardware or leave it.
+
 
 > **The bitmask reading was wrong.** It is not a mask and there is no global register.
 > The command addresses **one channel at a time**:
